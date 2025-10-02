@@ -1,37 +1,42 @@
-# venv / editor
+# --- Python 通用 ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# venv / 工具缓存
 .venv/
 env/
-*.code-workspace
+.venv*/
+env*/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.ipynb_checkpoints/
+
+# 构建产物
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# 覆盖率/报告
+.coverage
+coverage.xml
+htmlcov/
+
+# 编辑器
 .vscode/
 .idea/
+*.code-workspace
 
-# Python artifacts
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.egg-info/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Project outputs / logs
+# 你项目生成的输出
 out/
 logs/
 *.log
 *.html
 
-# Local secrets / configs
+# 私密/本地配置
 config.json
 *.secrets.json
 .env
-
-# Zips & large data (建议用 LFS 或别传)
-*.zip
-*.bin
-*.dat
-
-config.json
-
-config.json

@@ -1,0 +1,246 @@
+{
+  "api": {
+    "odos_user_addr": "0xC55d46058e01c32E764e395AFED6333513a2353A",
+    "odos_base": "https://api.odos.xyz",
+    "kyber_base": "https://aggregator-api.kyberswap.com"
+  },
+  "chains": [
+    {
+      "name": "ethereum",
+      "chain_id": 1,
+      "kyber_slug": "ethereum"
+    },
+    {
+      "name": "arbitrum",
+      "chain_id": 42161,
+      "kyber_slug": "arbitrum"
+    },
+    {
+      "name": "optimism",
+      "chain_id": 10,
+      "kyber_slug": "optimism"
+    },
+    {
+      "name": "avalanche",
+      "chain_id": 43114,
+      "kyber_slug": "avalanche"
+    },
+    {
+      "name": "plasma",
+      "chain_id": 9745,
+      "kyber_slug": "plasma"
+    },
+    {
+      "name": "fraxtal",
+      "chain_id": 252,
+      "kyber_slug": "fraxtal"
+    },
+    {
+      "name": "sonic",
+      "chain_id": 146,
+      "kyber_slug": "sonic"
+    },
+    {
+      "name": "polygon",
+      "chain_id": 137,
+      "kyber_slug": "polygon"
+    },
+    {
+      "name": "base",
+      "chain_id": 8453
+    },
+    {
+      "name": "bnb",
+      "chain_id": 56,
+      "kyber_slug": "bsc"
+    },
+    {
+      "name": "linea",
+      "chain_id": 59144
+    },
+    {
+      "name": "manta",
+      "chain_id": 169
+    },
+    {
+      "name": "scroll",
+      "chain_id": 534352
+    },
+    {
+      "name": "mode",
+      "chain_id": 34443
+    },
+    {
+      "name": "xlayer",
+      "chain_id": 196
+    },
+    {
+      "name": "metis",
+      "chain_id": 1088
+    },
+    {
+      "name": "kava",
+      "chain_id": 2222
+    },
+    {
+      "name": "morph",
+      "chain_id": 2818
+    },
+    {
+      "name": "swell",
+      "chain_id": 1923
+    },
+    {
+      "name": "mantle",
+      "chain_id": 5000
+    },
+    {
+      "name": "blast",
+      "chain_id": 81457
+    },
+    {
+      "name": "berachain",
+      "chain_id": 80094
+    },
+    {
+      "name": "unichain",
+      "chain_id": 130
+    },
+    {
+      "name": "hyperevm",
+      "chain_id": 999
+    }
+  ],
+  "assets": [
+    {
+      "symbol": "USDT",
+      "decimals": 6,
+      "address": {
+        "ethereum": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+        "arbitrum": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+        "optimism": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
+        "avalanche": "0x9702230A8Ea53601F5CD2dc00fDbc13d4dF4A8c7",
+        "plasma": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb",
+        "sonic": "0x6047828dc181963ba44974801FF68e538dA5eaF9",
+        "hyperevm":"0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb"
+      }
+    },
+    {
+      "symbol": "USDC",
+      "decimals": 6,
+      "address": {
+        "ethereum": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "arbitrum": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+        "optimism": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+        "avalanche": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+        "sonic": "0x29219dd400f2Bf60E5a23d13Be72B486D4038894",
+        "polygon": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+        "base": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "linea": "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",
+        "hyperevm":"0xb88339CB7199b77E23DB6E890353E22632Ba630f"
+      }
+    },
+    {
+      "symbol": "USDE",
+      "decimals": 18,
+      "address": {
+        "ethereum": "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3",
+        "plasma": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "fraxtal": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "arbitrum": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "optimism": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "base": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "bnb": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "linea": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "manta": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "scroll": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "mode": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "xlayer": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "metis": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "kava": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "morph": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "swell": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "mantle": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "blast": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "berachain": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+        "hyperevm":"0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34"
+      }
+    },
+    {
+      "symbol": "FRXUSD",
+      "decimals": 18,
+      "address": {
+        "ethereum": "0xCAcd6fd266aF91b8AeD52aCCc382b4e165586E29",
+        "arbitrum": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+        "optimism": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+        "avalanche": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+        "polygon": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+        "fraxtal": "0xFc00000000000000000000000000000000000001",
+        "sonic": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+        "base": "0xe5020A6d073a794B6E7f05678707dE47986Fb0b6",
+        "bnb": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+        "linea": "0xC7346783f5e645aa998B106Ef9E7f499528673D8",
+        "scroll": "0x397F939C3b91A74C321ea7129396492bA9Cdce82",
+        "mode": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+        "xlayer": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+        "berachain": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+        "unichain": "0x80Eede496655FB9047dd39d9f418d5483ED600df"
+      }
+    }
+  ],
+  "settings": {
+    "refresh": 8,
+    "probe_sizes": [
+      10000
+    ],
+    "slippage_limit_percent": 0.5,
+    "timeout_sec": 12,
+    "retries": 1,
+    "soft_timeout_sec": 5,
+    "base_assets": [
+      "USDT",
+      "USDC"
+    ],
+    "debug": true,
+    "adapter_support": {
+      "kyber": [
+        "ethereum",
+        "arbitrum",
+        "optimism",
+        "avalanche",
+        "plasma",
+        "sonic",
+        "bsc",
+        "berachain",
+        "base",
+        "polygon",
+        "linea"
+      ],
+      "odos": [
+      "ethereum",
+      "polygon",
+      "arbitrum",
+      "optimism", 
+      "bsc",
+      "base",
+      "scroll",
+      "mode",
+      "linea",
+      "mantle",
+      "avalanche",
+      "fraxtal",
+      "sonic"]
+    },
+    "size_opt_enable": true,
+    "size_opt_method": "double_then_golden",
+    "size_opt_min": 2500,
+    "size_opt_max": 640000,
+    "size_opt_tol_rel": 0.001,
+    "size_opt_tol_abs": 1e-06,
+    "size_opt_max_grows": 12,
+    "size_opt_max_iter": 32,
+    "size_opt_max_evals": 120,
+    "size_opt_integer": false
+    
+  }
+}

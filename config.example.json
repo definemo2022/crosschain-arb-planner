@@ -122,7 +122,7 @@
         "avalanche": "0x9702230A8Ea53601F5CD2dc00fDbc13d4dF4A8c7",
         "plasma": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb",
         "sonic": "0x6047828dc181963ba44974801FF68e538dA5eaF9",
-        "hyperevm":"0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb"
+        "hyperevm": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb"
       }
     },
     {
@@ -137,7 +137,7 @@
         "polygon": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
         "base": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
         "linea": "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",
-        "hyperevm":"0xb88339CB7199b77E23DB6E890353E22632Ba630f"
+        "hyperevm": "0xb88339CB7199b77E23DB6E890353E22632Ba630f"
       }
     },
     {
@@ -163,7 +163,7 @@
         "mantle": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
         "blast": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
         "berachain": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "hyperevm":"0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34"
+        "hyperevm": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34"
       }
     },
     {
@@ -217,19 +217,20 @@
         "linea"
       ],
       "odos": [
-      "ethereum",
-      "polygon",
-      "arbitrum",
-      "optimism", 
-      "bsc",
-      "base",
-      "scroll",
-      "mode",
-      "linea",
-      "mantle",
-      "avalanche",
-      "fraxtal",
-      "sonic"]
+        "ethereum",
+        "polygon",
+        "arbitrum",
+        "optimism",
+        "bsc",
+        "base",
+        "scroll",
+        "mode",
+        "linea",
+        "mantle",
+        "avalanche",
+        "fraxtal",
+        "sonic"
+      ]
     },
     "size_opt_enable": true,
     "size_opt_method": "double_then_golden",
@@ -241,6 +242,5 @@
     "size_opt_max_iter": 32,
     "size_opt_max_evals": 120,
     "size_opt_integer": false
-    
   }
 }

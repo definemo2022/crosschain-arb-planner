@@ -1,0 +1,35 @@
+# venv / editor
+.venv/
+env/
+*.code-workspace
+.vscode/
+.idea/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project outputs / logs
+out/
+logs/
+*.log
+*.html
+
+# Local secrets / configs
+config.json
+*.secrets.json
+.env
+
+# Zips & large data (建议用 LFS 或别传)
+*.zip
+*.bin
+*.dat
+
+config.json

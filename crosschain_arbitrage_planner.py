@@ -80,8 +80,27 @@ def _safe_json_parse(resp_text: str, *, where: str) -> Any:
 def _now_str() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
-def _fmt(x: float) -> str:
-    return f"{x:,.6f}"
+def _fmt(x, decimals: int = 6, dash: str = "—") -> str:
+    """把数字格式化为千分位；x 为 None/无效时显示 dash。"""
+    if x is None:
+        return dash
+    try:
+        xf = float(x)
+    except (TypeError, ValueError):
+        # 已是字符串或非数值，直接返回
+        return str(x)
+    return f"{xf:,.{decimals}f}"
+
+def _fmt_pct(x, decimals: int = 4, dash: str = "—") -> str:
+    """百分数字符串；x 为 None/无效时显示 dash。"""
+    if x is None:
+        return dash
+    try:
+        xf = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    return f"{xf:,.{decimals}f}%"
+
 
 # =============== 配置与模型 ===============
 
@@ -568,57 +587,86 @@ def _shared_chains(app: AppConfig, a: Asset, b: Asset) -> List[Chain]:
     names = [cn for cn in app.chains.keys() if _has_addr(a, cn) and _has_addr(b, cn)]
     return [app.chains[n] for n in names]
 
-def _render_two_leg(title: str, refresh: int, rows: List[dict], a_sym: str, b_sym: str, base_in: float, debug_html: str = "", head_extra: str = "") -> str:
-    esc = lambda s: (s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-    if not rows:
-        body_html = "<div style='color:#64748b'>No viable two-leg paths found.</div>"
-    else:
-        tr_html = []
-        # 按 pnl 从高到低排
-        rows = sorted(rows, key=lambda r: r["pnl"], reverse=True)
-        for r in rows:
-            tr_html.append(
-                f"<tr>"
-                f"<td style='text-align:left'>{esc(r['start'])}</td>"
-                f"<td style='text-align:left'>{esc(r['ret'])}</td>"
-                f"<td>{esc(r['leg1_adapter'])}</td>"
-                f"<td>{_fmt(r['mid_b'])} {esc(b_sym)}</td>"
-                f"<td>{esc(r['leg2_adapter'])}</td>"
-                f"<td>{_fmt(r['final_a'])} {esc(a_sym)}</td>"
-                f"<td>{_fmt(r['pnl'])} {esc(a_sym)}</td>"
-                f"<td>{_fmt(r['pnl_pct'])}%</td>"
-                f"</tr>"
-            )
-        body_html = f"""
-        <table class="t">
-          <thead>
-            <tr>
-              <th>Start Chain</th><th>Return Chain</th>
-              <th>Leg1 Adapter</th><th>A→B Out</th>
-              <th>Leg2 Adapter</th><th>Final A</th>
-              <th>Net PnL (A)</th><th>PnL %</th>
-            </tr>
-          </thead>
-          <tbody>{''.join(tr_html)}</tbody>
-        </table>
-        """
-    css = """
-    body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft Yahei';margin:20px;color:#0f172a}
-    .t{border-collapse:collapse;width:100%} .t th,.t td{border:1px solid #e2e8f0;padding:8px}
-    .t th{text-align:left;background:#f8fafc}
-    """
-    html = f"""<!doctype html><html><head>
-<meta charset="utf-8"><meta http-equiv="refresh" content="{refresh}">
-<title>{esc(title)}</title>
-<style>{css}</style>
-{head_extra}
-</head><body>
-<h2>{esc(title)}</h2>
-<div style="color:#64748b;margin:6px 0">A={esc(a_sym)}, B={esc(b_sym)} · base={_fmt(base_in)} {esc(a_sym)} · Auto refresh {refresh}s · {esc(_now_str())}</div>
-{debug_html}
-{body_html}
-</body></html>"""
-    return html
+def _render_two_leg(title: str, refresh: int, rows: list[dict], a_sym: str, b_sym: str, base_in: float) -> str:
+    # 简洁的转义与格式化（确保你已有 _fmt / _fmt_pct，或用这两个内联版）
+    def esc(s):
+        s = "" if s is None else str(s)
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def fmt(x, decimals: int = 6, dash: str = "—"):
+        if x is None:
+            return dash
+        try:
+            xf = float(x)
+        except (TypeError, ValueError):
+            return str(x)
+        return f"{xf:,.{decimals}f}"
+
+    def fmt_pct(x, decimals: int = 4, dash: str = "—"):
+        if x is None:
+            return dash
+        try:
+            xf = float(x)
+        except (TypeError, ValueError):
+            return str(x)
+        return f"{xf:,.{decimals}f}%"
+
+    trs = []
+    for r in (rows or []):
+        start = r.get("start", "?")             # 从 row 取，不再用外部 ci/cj
+        ret   = r.get("ret",   "?")
+        leg1  = r.get("leg1_adapter", "-")
+        leg2  = r.get("leg2_adapter", "-")
+        mid_b_val   = r.get("mid_b")
+        final_a_val = r.get("final_a")
+        pnl_val     = r.get("pnl")
+        pnl_pct_val = r.get("pnl_pct")
+        note        = r.get("note", "")
+
+        trs.append(
+            "<tr>"
+            f"<td>{esc(start)}</td>"
+            f"<td>{esc(ret)}</td>"
+            f"<td>{esc(leg1)}</td>"
+            f"<td>{fmt(mid_b_val)}{' ' + esc(b_sym) if mid_b_val is not None else ''}</td>"
+            f"<td>{esc(leg2)}</td>"
+            f"<td>{fmt(final_a_val)}{' ' + esc(a_sym) if final_a_val is not None else ''}</td>"
+            f"<td>{fmt(pnl_val)}{' ' + esc(a_sym) if pnl_val is not None else ''}</td>"
+            f"<td>{fmt_pct(pnl_pct_val)}</td>"
+            f"<td>{esc(note)}</td>"
+            "</tr>"
+        )
+
+    table = (
+        "<table class='t'>"
+        "<thead><tr>"
+        "<th>Start</th><th>Return</th><th>Leg1</th>"
+        f"<th>A→B Out ({esc(b_sym)})</th>"
+        "<th>Leg2</th>"
+        f"<th>Final A ({esc(a_sym)})</th>"
+        f"<th>PnL ({esc(a_sym)})</th>"
+        "<th>PnL%</th><th>Note</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(trs)}</tbody></table>"
+    )
+
+    css = (
+        "body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft YaHei';"
+        "margin:20px;color:#0f172a}"
+        ".t{border-collapse:collapse;width:100%}"
+        ".t th,.t td{border:1px solid #e2e8f0;padding:8px}"
+        ".t th{text-align:left;background:#f8fafc}"
+        "h2{margin:0 0 12px 0}"
+        ".sub{color:#475569;margin:0 0 16px 0}"
+    )
+
+    subtitle = f"Base In: {fmt(base_in)} {esc(a_sym)} · Auto-refresh: {int(refresh)}s"
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<meta http-equiv='refresh' content='{int(refresh)}'>"
+        f"<title>{esc(title)}</title><style>{css}</style></head>"
+        f"<body><h2>{esc(title)}</h2><div class='sub'>{esc(subtitle)}</div>{table}</body></html>"
+    )
 
 async def run_two_leg_mode(cfg_path: str, two_leg: str, out_html: str, refresh: int, verbose: bool, once: bool):
     """

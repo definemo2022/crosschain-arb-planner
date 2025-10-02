@@ -120,9 +120,14 @@
         "arbitrum": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
         "optimism": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
         "avalanche": "0x9702230A8Ea53601F5CD2dc00fDbc13d4dF4A8c7",
+        "kava": "0x919C1c267BC06a7039e03fCc2eF738525769109c",
+        "celo": "0x48065fbBE25f71C9282ddF5E1cD6D6A887483D5e",
+        "kaia": "0xd077a400968890eaCc75cDC901F0356C943e4FDb",
         "plasma": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb",
         "sonic": "0x6047828dc181963ba44974801FF68e538dA5eaF9",
-        "hyperevm": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb"
+        "hyperevm": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb",
+        "polygon":"0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
+        
       }
     },
     {
@@ -166,6 +171,34 @@
         "hyperevm": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34"
       }
     },
+    {
+      "symbol": "sUSDe",
+      "decimals": 18,
+      "address": {
+        "ethereum": "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497",
+        "arbitrum": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "optimism": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "base":     "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "bnb":      "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "linea":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "manta":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "scroll":   "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "fraxtal":  "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "mode":     "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "xlayer":   "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "metis":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "kava":     "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "morph":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "swell":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "mantle":   "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "blast":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "berachain":"0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "zircuit":  "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+        "zksync":   "0xAD17Da2f6Ac76746EF261E835C50b2651ce36DA8",
+        "plasma":   "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2"
+      }
+    },
+
     {
       "symbol": "FRXUSD",
       "decimals": 18,

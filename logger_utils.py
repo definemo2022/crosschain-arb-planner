@@ -1,84 +1,172 @@
 # logger_utils.py
 from __future__ import annotations
-import logging
+import logging, os, sys, threading, traceback, time
 from typing import Optional
 
-class DebugLogger:
+__all__ = ["init_debug_logger", "NullLogger", "SafeDebugLogger"]
+
+class NullLogger:
+    """兜底空 logger：所有方法都是 no-op，panel() 返回空字符串。"""
+    def info(self, msg, *args, **kwargs):     pass
+    def warn(self, msg, *args, **kwargs):     pass
+    def warning(self, msg, *args, **kwargs):  pass
+    def error(self, msg, *args, **kwargs):    pass
+    def exception(self, msg, *args, **kwargs):pass
+    def panel(self, *a, **k) -> str:          return ""
+    def js_auto_refresh(self, seconds) -> str: return "" 
+
+class SafeDebugLogger:
     """
-    可选的调试/日志工具：
-    - enabled=False 时，panel() 返回空字符串，不影响页面
-    - setup() 配置文件/控制台日志
-    - info/debug/exception 等方法直接代理到 logging
-    - panel(stats) 生成嵌入 HTML 的调试面板（含日志尾部）
-    - js_auto_refresh(refresh_sec) 返回 JS 兜底刷新脚本
+    安全 Logger：
+    - 任何 log / panel 异常都被吞掉，写 stderr 兜底，不影响主流程
+    - 文件 & 控制台双写可选
     """
-    def __init__(self, enabled: bool = False):
-        self.enabled: bool = enabled
-        self.path: Optional[str] = None
-        self._logger = logging.getLogger("arb")
+    def __init__(self, log_file: Optional[str], to_console: bool = True):
+        self._lock = threading.Lock()
+        self._logger = logging.getLogger(f"arbplanner.{id(self)}")
+        self._logger.setLevel(logging.DEBUG)
+        # 避免重复 handler
+        for h in list(self._logger.handlers):
+            self._logger.removeHandler(h)
 
-    def setup(self, log_path: str, *, verbose: bool = False, level: int = logging.DEBUG):
-        self.path = log_path
-        self._logger.handlers.clear()
-        self._logger.setLevel(level)
+        formatter = logging.Formatter(fmt="%(asctime)s | %(levelname)s | %(message)s",
+                                      datefmt="%Y-%m-%d %H:%M:%S")
 
-        fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+        if log_file:
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(log_file)), exist_ok=True)
+                fh = logging.FileHandler(log_file, encoding="utf-8")
+                fh.setLevel(logging.DEBUG)
+                fh.setFormatter(formatter)
+                self._logger.addHandler(fh)
+            except Exception:
+                # 文件句柄失败也不抛，降级仅 console
+                print("[SafeDebugLogger] FileHandler init failed:", file=sys.stderr)
+                traceback.print_exc()
 
-        # 文件日志
-        fh = logging.FileHandler(log_path, encoding="utf-8")
-        fh.setLevel(level)
-        fh.setFormatter(fmt)
-        self._logger.addHandler(fh)
+        if to_console:
+            try:
+                sh = logging.StreamHandler(sys.stdout)
+                sh.setLevel(logging.INFO)
+                sh.setFormatter(formatter)
+                self._logger.addHandler(sh)
+            except Exception:
+                print("[SafeDebugLogger] StreamHandler init failed:", file=sys.stderr)
+                traceback.print_exc()
 
-        # 控制台输出
-        sh = logging.StreamHandler()
-        sh.setLevel(logging.DEBUG if verbose else logging.INFO)
-        sh.setFormatter(fmt)
-        self._logger.addHandler(sh)
-
-        self._logger.debug("DebugLogger initialized -> %s", log_path)
-
-    # 代理常用方法
-    def info(self, *a, **k): self._logger.info(*a, **k)
-    def debug(self, *a, **k): self._logger.debug(*a, **k)
-    def warning(self, *a, **k): self._logger.warning(*a, **k)
-    def error(self, *a, **k): self._logger.error(*a, **k)
-    def exception(self, *a, **k): self._logger.exception(*a, **k)
-
-    def _tail(self, n=200) -> str:
-        if not self.path:
-            return ""
+    # 基础安全输出
+    def _safe(self, level: str, msg: str):
         try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            return "".join(lines[-n:])
+            with self._lock:
+                getattr(self._logger, level, self._logger.info)(msg)
         except Exception:
-            return ""
+            # 永不抛到主程序
+            try:
+                sys.stderr.write(f"[SafeDebugLogger.{level} FAILED] {msg}\n")
+                traceback.print_exc()
+            except Exception:
+                pass
 
-    def panel(self, stats: dict) -> str:
-        """
-        生成 HTML 调试面板（简单表格 + 日志尾部）。
-        enabled=False 时返回空字符串。
-        """
-        if not self.enabled:
-            return ""
-        esc = lambda s: (str(s) if s is not None else "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-        rows = "".join(f"<tr><td>{esc(k)}</td><td>{esc(v)}</td></tr>" for k, v in stats.items())
-        tail = self._tail(120)
-        tail_html = f"<details open><summary>Last log lines</summary><pre style='font-size:12px;white-space:pre-wrap;background:#0b1022;color:#cbd5e1;padding:8px;border-radius:8px'>{esc(tail)}</pre></details>" if tail else ""
-        return f"""
-        <div style="border:1px dashed #94a3b8;padding:10px;border-radius:8px;margin:12px 0;background:#f8fafc">
-          <b>Debug</b>
-          <table class="t" style="margin-top:6px"><tbody>{rows}</tbody></table>
-          {tail_html}
-        </div>
-        """
-
-    @staticmethod
-    def js_auto_refresh(refresh_sec: int) -> str:
-        """返回一个 setTimeout 刷新的 JS 片段（用于 meta refresh 失效的兜底）。"""
+    # 用一个统一的发射函数，兼容 logging 风格 (msg, *args, **kwargs)
+    def _emit(self, level: str, msg, *args, **kwargs):
         try:
-            sec = int(refresh_sec)
+            # logging 约定：如果有 args，就用 % 做格式化
+            if args:
+                try:
+                    msg = msg % args
+                except Exception:
+                    # 容错兜底：拼接字符串，避免抛错影响主流程
+                    msg = " ".join([str(msg)] + [str(x) for x in args])
+
+            exc_info = kwargs.get("exc_info", None)
+            with self._lock:
+                getattr(self._logger, level, self._logger.info)(msg, exc_info=exc_info)
         except Exception:
-            sec = 8
-        return f"<script>setTimeout(function(){{ location.reload(true); }}, {sec}*1000);</script>"
+            try:
+                sys.stderr.write(f"[SafeDebugLogger.{level} FAILED] {msg}\n")
+                traceback.print_exc()
+            except Exception:
+                pass
+
+    def info(self, msg, *args, **kwargs):     self._emit("info", msg, *args, **kwargs)
+    def warn(self, msg, *args, **kwargs):     self._emit("warning", msg, *args, **kwargs)
+    def warning(self, msg, *args, **kwargs):  self._emit("warning", msg, *args, **kwargs)
+    def error(self, msg, *args, **kwargs):    self._emit("error", msg, *args, **kwargs)
+    def exception(self, msg, *args, **kwargs):
+        # 与 logging.exception 一致：自动带栈
+        kwargs["exc_info"] = True
+        self._emit("error", msg, *args, **kwargs)
+
+    # HTML 调试面板：返回一段可嵌入的 <details>，失败则返回空串
+    def panel(self, title, html_body: str = "") -> str:
+        try:
+            import json
+            if not isinstance(title, str):
+                try:
+                    title_str = json.dumps(title, ensure_ascii=False)
+                except Exception:
+                    title_str = str(title)
+            else:
+                title_str = title
+            safe_title = (
+                title_str.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+            )
+            body = html_body or ""
+            return (
+                "<details style='margin-top:12px'>"
+                f"<summary>{safe_title}</summary>"
+                "<div style='padding:8px;border:1px dashed #cbd5e1;margin-top:8px'>"
+                f"{body}"
+                "</div></details>"
+            )
+        except Exception:
+            self._emit("warning", "[panel failed] title=%r", title)
+            return ""
+
+    # ← 新增：和旧代码兼容，返回 head 区域可用的刷新标签/脚本
+    def js_auto_refresh(self, seconds) -> str:
+        try:
+            s = int(seconds)
+        except Exception:
+            s = 8
+        # 同时给 meta 和 JS（有些页面只放 head_extra）
+        return (
+            f"<meta http-equiv='refresh' content='{s}'>"
+            f"<script>setTimeout(function(){{location.reload()}}, {s*1000});</script>"
+        )
+
+def _decide_log_path(out_html: Optional[str]) -> Optional[str]:
+    if not out_html:
+        return None
+    base, _ = os.path.splitext(out_html)
+    return base + ".log"
+
+def init_debug_logger(app, out_html: Optional[str], verbose: bool) -> SafeDebugLogger | NullLogger:
+    """
+    统一入口：永远返回一个可用的 logger（不会是 None）
+    - 若 app.settings.debug 为 False，则返回 NullLogger（完全 no-op）
+    - 否则返回 SafeDebugLogger（文件 + 控制台）
+    """
+    try:
+        settings = getattr(app, "settings", {}) or {}
+        debug_enabled = bool(settings.get("debug", True))
+        to_console = bool(verbose)
+    except Exception:
+        # app 异常也不要影响主流程
+        debug_enabled, to_console = True, bool(verbose)
+
+    if not debug_enabled:
+        return NullLogger()
+
+    log_path = _decide_log_path(out_html)
+    try:
+        lg = SafeDebugLogger(log_file=log_path, to_console=to_console)
+        lg.info(f"DebugLogger initialized -> {log_path or '(console only)'}")
+        return lg
+    except Exception:
+        # 任何初始化问题都降级到 NullLogger
+        try:
+            sys.stderr.write("[init_debug_logger] fallback to NullLogger\n")
+        except Exception:
+            pass
+        return NullLogger()

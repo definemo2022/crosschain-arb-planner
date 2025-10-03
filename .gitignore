@@ -33,10 +33,20 @@ htmlcov/
 # 你项目生成的输出
 out/
 logs/
+scripts/
 *.log
 *.html
+*.txt
 
 # 私密/本地配置
 config.json
 *.secrets.json
 .env
+
+config.json
+watchlist.json
+*.log
+*.html
+__pycache__/
+out/
+

@@ -36,8 +36,17 @@ logs/
 scripts/
 *.log
 *.html
+*.txt
 
 # 私密/本地配置
 config.json
 *.secrets.json
 .env
+
+config.json
+watchlist.json
+*.log
+*.html
+__pycache__/
+out/
+

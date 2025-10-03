@@ -1,41 +1,19 @@
 from __future__ import annotations
 import os, json, time, argparse, asyncio, traceback
 from dataclasses import dataclass
-from typing import Dict, Any, Tuple, List, Optional
+from typing import Dict, Any,  List
 from size_optimizer import OptimizeConfig, optimize_size_async
-import math
 
+from logger_utils import init_debug_logger, NullLogger
+# 全局兜底，避免未初始化时报 NameError
+DBG = NullLogger()
 
-# 顶部（import 区域后面）
-try:
-    from logger_utils import DebugLogger
-except Exception:
-    class DebugLogger:
-        def __init__(self, enabled: bool = False): self.enabled = enabled
-        def setup(self, *a, **k): pass
-        def info(self, *a, **k): pass
-        def debug(self, *a, **k): pass
-        def warning(self, *a, **k): pass
-        def error(self, *a, **k): pass
-        def exception(self, *a, **k): pass
-        def panel(self, *a, **k): return ""
-        @staticmethod
-        def js_auto_refresh(refresh_sec: int) -> str: return ""
-
-DBG = DebugLogger(enabled=False)   # 占位，全局
-_DBG_SETUP_DONE = False            # ← 新增：只 setup 一次
 
 def _init_debug(app, out_html: str, verbose: bool):
-    global DBG, _DBG_SETUP_DONE
-    if _DBG_SETUP_DONE:
-        return
-    enabled = bool(app.settings.get("debug", True))
-    DBG = DebugLogger(enabled=enabled)
-    if DBG.enabled:
-        log_path = os.path.splitext(out_html)[0] + ".log"
-        DBG.setup(log_path, verbose=verbose)  # setup 内部会打印一次 initialized
-    _DBG_SETUP_DONE = True
-
+    """统一初始化全局 DBG；永远返回一个可用的 logger。"""
+    global DBG
+    DBG = init_debug_logger(app, out_html, verbose)
+    
 
 
 # =============== 基础设施 ===============
@@ -472,9 +450,11 @@ def _build_legs_for_pair_any(app: AppConfig, pair_any: str) -> List[str]:
 
 
 async def run_merged_mode(cfg_path: str, pair_spec: str | None, out_html: str, refresh: int, verbose: bool, once: bool, pair_any: str | None = None):
+     # 1) 先加载配置（_init_debug 需要 app.settings）
     app = load_config(cfg_path)
-    _init_debug(app, out_html, verbose)   # ← 只会执行一次
 
+    # 2) 初始化调试器；可能返回 None（debug 关闭时）
+    _init_debug(app, out_html, verbose)
 
     base_in = float(app.settings.get("probe_sizes", [10000])[0])
     if not os.path.exists(out_html):
@@ -689,9 +669,11 @@ async def run_two_leg_mode(cfg_path: str, pair_spec: str, out_html: str, refresh
     # 解析出两条链与资产
     ci_name, cj_name, a_sym, b_sym = _parse_two_leg_pairspec(spec)
 
-    # 加载配置
+     # 1) 先加载配置（_init_debug 需要 app.settings）
     app = load_config(cfg_path)
-    _init_debug(app, out_html, verbose)   # ← 只会执行一次
+
+    # 2) 初始化调试器；可能返回 None（debug 关闭时）
+    _init_debug(app, out_html, verbose)
 
     base_in = float(app.settings.get("probe_sizes", [10000])[0])
     if not os.path.exists(out_html):
@@ -813,6 +795,106 @@ async def run_two_leg_mode(cfg_path: str, pair_spec: str, out_html: str, refresh
             return
         await asyncio.sleep(max(1, int(refresh)))
 
+
+
+def _render_watchlist(title: str, refresh: int, items: List[Dict]) -> str:
+    def esc(s):
+        s = "" if s is None else str(s)
+        return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+    css = (
+        "body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft YaHei';margin:20px;color:#0f172a}"
+        ".t{border-collapse:collapse;width:100%}.t th,.t td{border:1px solid #e2e8f0;padding:8px}"
+        ".t th{text-align:left;background:#f8fafc}h2{margin:0 0 12px 0}.sub{color:#475569;margin:0 0 16px 0}"
+        ".ok{color:#059669}.warn{color:#b45309}.err{color:#b91c1c}"
+    )
+    rows = []
+    for it in items:
+        rows.append(
+            "<tr>"
+            f"<td>{esc(it.get('from_chain','?'))}</td>"
+            f"<td>{esc(it.get('to_chain','?'))}</td>"
+            f"<td>{esc(it.get('asset_a','?'))}</td>"
+            f"<td>{esc(it.get('asset_b','?'))}</td>"
+            f"<td>{esc(it.get('base','-'))}</td>"
+            f"<td>{esc(it.get('status','pending'))}</td>"
+            f"<td>{esc(it.get('note',''))}</td>"
+            "</tr>"
+        )
+    table = (
+        "<table class='t'>"
+        "<thead><tr><th>From Chain</th><th>To Chain</th><th>Asset A</th><th>Asset B</th><th>Base (A)</th><th>Status</th><th>Note</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<meta http-equiv='refresh' content='{int(refresh)}'>"
+        f"<title>{esc(title)}</title><style>{css}</style></head>"
+        f"<body><h2>{esc(title)}</h2><div class='sub'>Auto-refresh: {int(refresh)}s</div>{table}</body></html>"
+    )
+
+async def run_watchlist_mode(cfg_path: str, watchlist_path: str, out_html: str, refresh: int, verbose: bool, once: bool):
+     # 1) 先加载配置（_init_debug 需要 app.settings）
+    app = load_config(cfg_path)
+
+    # 2) 初始化调试器；可能返回 None（debug 关闭时）
+    _init_debug(app, out_html, verbose)
+
+    # 1) 读取 watchlist
+    try:
+        with open(watchlist_path, "r", encoding="utf-8") as f:
+            wl = json.load(f)
+    except Exception as e:
+        raise ValueError(f"watchlist 读取失败: {e}")
+
+    if not isinstance(wl, list):
+        raise ValueError("watchlist.json 顶层必须是数组(list)")
+
+    # 2) 逐条校验（链/资产是否存在；base 可选）
+    items = []
+    for idx, it in enumerate(wl):
+        if not isinstance(it, dict):
+            items.append({"status":"error","note":f"第 {idx} 项不是对象"}); continue
+        from_chain = (it.get("from_chain") or "").strip().lower()
+        to_chain   = (it.get("to_chain") or "").strip().lower()
+        asset_a    = (it.get("asset_a") or "").strip().upper()
+        asset_b    = (it.get("asset_b") or "").strip().upper()
+        base       = it.get("base")  # 可空；后续实现可用默认 base
+
+        status = "ok"; note = ""
+        if not from_chain or from_chain not in app.chains:
+            status, note = "error", f"未知 from_chain: {from_chain}"
+        elif not to_chain or to_chain not in app.chains:
+            status, note = "error", f"未知 to_chain: {to_chain}"
+        elif asset_a not in app.assets:
+            status, note = "error", f"未知 asset_a: {asset_a}"
+        elif asset_b not in app.assets:
+            status, note = "error", f"未知 asset_b: {asset_b}"
+        elif asset_a == asset_b:
+            status, note = "warn", "资产相同，无法套利"
+
+        row = {
+            "from_chain": from_chain, "to_chain": to_chain,
+            "asset_a": asset_a, "asset_b": asset_b,
+            "base": base if base is not None else app.settings.get("default_base_in", 10_000),
+            "status": status, "note": note,
+        }
+        items.append(row)
+
+    # 3) 先仅渲染“占位页面”，验证加载/校验/UI 是否工作
+    title = "Two-Leg Watchlist (Preview)"
+    html = _render_watchlist(title, refresh, items)
+    _write_html(out_html, html)
+    DBG.info(f"[watchlist] preview written -> {out_html}")
+
+    # 4) 循环刷新（一次性模式则直接返回）
+    if once:
+        return
+    while True:
+        await asyncio.sleep(max(1, int(refresh)))
+        _write_html(out_html, _render_watchlist(title, refresh, items))
+
+
+
 # =============== CLI ===============
 # ---- 基础资产：配置与 CLI 覆盖 ----
 CLI_BASE_ASSETS: set[str] = set()
@@ -848,11 +930,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--debug", action="store_true", help="开启调试面板并写日志（需要 logger_utils.py）")
     ap.add_argument("--log-file", required=False, help="日志文件路径；缺省为与HTML同名的 .log")
-
     ap.add_argument("--config", required=True)
-    # 单腿“合并输出”模式
-    ap.add_argument("--pair-spec", required=False,
-        help='留空=自动遍历(USDT/USDC + USDT/USDE + 与 FRXUSD 双向); 例: "ethereum:USDT>USDE,plasma:USDT>USDE"')
+    
+    #watchList Mode
+    ap.add_argument("--watchlist",type=str,help="Path to a watchlist.json (two-leg monitoring list). If set, run watchlist mode."
+)    # 单腿“合并输出”模式
+    ap.add_argument("--pair-spec", required=False,help='留空=自动遍历(USDT/USDC + USDT/USDE + 与 FRXUSD 双向); 例: "ethereum:USDT>USDE,plasma:USDT>USDE"')
     # 双腿遍历（单对）
     ap.add_argument("--two-leg",action="store_true",help="Enable two-leg mode (requires --pair-spec with two legs, e.g. ethereum:A>B,plasma:B>A)")
     ap.add_argument("--pair-html", required=True)
@@ -868,6 +951,19 @@ def main():
     global CLI_BASE_ASSETS
     CLI_BASE_ASSETS = _parse_base_assets_arg(args.base_assets)
 
+    #让 --watchlist 的优先级高于 --two-leg/--pair-any（避免用户同时传导致歧义）
+    if args.watchlist:
+        asyncio.run(
+            run_watchlist_mode(
+                args.config,
+                args.watchlist,
+                args.pair_html,
+                args.refresh,
+                args.verbose,
+                args.once,
+            )
+        )
+        return
 
     if args.two_leg:
     # 两腿（watchlist 之前就是手动 pair-spec；我们后面会逐步改成 watchlist 驱动）

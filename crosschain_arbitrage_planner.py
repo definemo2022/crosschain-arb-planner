@@ -39,14 +39,6 @@ def _init_debug(app, out_html: str, verbose: bool):
 
 
 # =============== 基础设施 ===============
-
-async def _best_with_soft_timeout(coro, soft_timeout):
-    try:
-        return await asyncio.wait_for(coro, timeout=soft_timeout)
-    except Exception:
-        return None
-    
-
 def _ensure_dir(path: str):
     d = os.path.dirname(path)
     if d:
@@ -90,17 +82,6 @@ def _fmt(x, decimals: int = 6, dash: str = "—") -> str:
         # 已是字符串或非数值，直接返回
         return str(x)
     return f"{xf:,.{decimals}f}"
-
-def _fmt_pct(x, decimals: int = 4, dash: str = "—") -> str:
-    """百分数字符串；x 为 None/无效时显示 dash。"""
-    if x is None:
-        return dash
-    try:
-        xf = float(x)
-    except (TypeError, ValueError):
-        return str(x)
-    return f"{xf:,.{decimals}f}%"
-
 
 # =============== 配置与模型 ===============
 
@@ -171,18 +152,7 @@ def _asset_universe(app, universe_str: str | None = None) -> list[str]:
     return [s for s in symbols if s in app.assets]
 
 
-
-# 全局 Debug 开关（默认 True）
-def _get_debug_flag(app) -> bool:
-    try:
-        return bool(app.settings.get("debug", True))
-    except Exception:
-        return True
-
-
-
 # =============== 适配器白名单 ===============
-
 def _adapter_allows_chain(app: AppConfig, adapter: str, chain: Chain) -> bool:
     """
     settings.adapter_support[adapter] 若配置了白名单，则只在白名单内的链上请求；
@@ -582,7 +552,6 @@ async def run_merged_mode(cfg_path: str, pair_spec: str | None, out_html: str, r
         await asyncio.sleep(max(1, int(refresh)))
 
 # =============== 双腿遍历（单一资产对） ===============
-
 def _shared_chains(app: AppConfig, a: Asset, b: Asset) -> List[Chain]:
     names = [cn for cn in app.chains.keys() if _has_addr(a, cn) and _has_addr(b, cn)]
     return [app.chains[n] for n in names]
@@ -668,7 +637,7 @@ def _render_two_leg(title: str, refresh: int, rows: list[dict], a_sym: str, b_sy
         f"<body><h2>{esc(title)}</h2><div class='sub'>{esc(subtitle)}</div>{table}</body></html>"
     )
 
-async def run_two_leg_mode(cfg_path: str, two_leg: str, out_html: str, refresh: int, verbose: bool, once: bool):
+async def run_two_leg_mode(cfg_path: str, pair_spec: str, out_html: str, refresh: int, verbose: bool, once: bool):
     """
     手动 two-leg：严格按用户指定的 A>B 执行；不做基础资产/非基础资产判断。
     逻辑：
@@ -678,6 +647,49 @@ async def run_two_leg_mode(cfg_path: str, two_leg: str, out_html: str, refresh: 
       - 计算 pnl = final_A - base_in，记录一行
       - 任意一步拿不到报价 -> 跳过该路径
     """
+    spec = pair_spec
+    if not spec:
+        raise ValueError('two-leg mode requires --pair-spec like "ethereum:USDT>sUSDe,plasma:sUSDe>USDT"')
+
+
+
+    def _parse_two_leg_pairspec(pair_spec: str):
+        """
+        期望格式: "CHAIN1:A>B,CHAIN2:B>A"
+        返回: (chain1_name, chain2_name, A_symbol, B_symbol)
+        """
+        if not pair_spec:
+            raise ValueError("two-leg mode requires --pair-spec like ethereum:USDT>sUSDe,plasma:sUSDe>USDT")
+
+        legs = [x.strip() for x in pair_spec.split(",") if x.strip()]
+        if len(legs) != 2:
+            raise ValueError(f"--pair-spec needs exactly two legs, got: {pair_spec}")
+
+        def _parse_leg(leg: str):
+            # "chain:ASSET1>ASSET2"
+            try:
+                chain_part, path = leg.split(":", 1)
+            except ValueError:
+                raise ValueError(f"Invalid leg (missing chain:): {leg}")
+            try:
+                a_sym, b_sym = [t.strip().upper() for t in path.split(">", 1)]
+            except ValueError:
+                raise ValueError(f"Invalid leg (missing '>'): {leg}")
+            return chain_part.strip().lower(), a_sym, b_sym
+
+        c1, a1, b1 = _parse_leg(legs[0])
+        c2, a2, b2 = _parse_leg(legs[1])
+
+        # 要求两腿资产相反：A1->B1，再 B1->A1
+        if not (a1 == b2 and b1 == a2):
+            raise ValueError(f"two-leg assets must be inverse, got: {legs[0]} + {legs[1]}")
+
+        return c1, c2, a1, b1
+    
+    # 解析出两条链与资产
+    ci_name, cj_name, a_sym, b_sym = _parse_two_leg_pairspec(spec)
+
+    # 加载配置
     app = load_config(cfg_path)
     _init_debug(app, out_html, verbose)   # ← 只会执行一次
 
@@ -685,9 +697,14 @@ async def run_two_leg_mode(cfg_path: str, two_leg: str, out_html: str, refresh: 
     if not os.path.exists(out_html):
         _write_placeholder_html(out_html, f"Two-Leg Scan", refresh)
 
-    if ">" not in two_leg:
-        raise ValueError("--two-leg 形如 USDT>USDC")
-    a_sym, b_sym = [x.strip().upper() for x in two_leg.split(">")]
+    
+     # 拿到 Chain 对象（假设 app.chains 是 {name->Chain}）
+    try:
+        ci = app.chains[ci_name]
+        cj = app.chains[cj_name]
+    except KeyError as e:
+        raise ValueError(f"unknown chain in --pair-spec: {e!s}")
+
     if a_sym not in app.assets or b_sym not in app.assets:
         raise ValueError(f"资产未配置: {a_sym} 或 {b_sym}")
     a = app.assets[a_sym]; b = app.assets[b_sym]
@@ -796,228 +813,7 @@ async def run_two_leg_mode(cfg_path: str, two_leg: str, out_html: str, refresh: 
             return
         await asyncio.sleep(max(1, int(refresh)))
 
-
-
-
-# =============== 双腿遍历（自动遍历所有资产对） ===============
-def _render_two_leg_all(title: str, refresh: int, rows: list[dict]) -> str:
-    esc = lambda s: ("" if s is None else str(s)).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-    trs = []
-    for r in rows or []:
-        pair = r.get("pair") or f"{r.get('a_sym','?')}/{r.get('b_sym','?')}"
-        start = r.get("start","?")
-        ret   = r.get("ret","?")
-        leg1  = r.get("leg1_adapter","-")
-        out_b = r.get("mid_b","-")
-        leg2  = r.get("leg2_adapter","-")
-        final_a = r.get("final_a","-")
-        pnl   = r.get("pnl","-")
-        pnl_pct = r.get("pnl_pct","-")
-        note  = r.get("note","")
-
-        trs.append(
-            "<tr>"
-            f"<td>{esc(pair)}</td>"
-            f"<td>{esc(start)}</td>"
-            f"<td>{esc(ret)}</td>"
-            f"<td>{esc(leg1)}</td>"
-            f"<td>{esc(out_b)}</td>"
-            f"<td>{esc(leg2)}</td>"
-            f"<td>{esc(final_a)}</td>"
-            f"<td>{esc(pnl)}</td>"
-            f"<td>{esc(pnl_pct)}</td>"
-            f"<td>{esc(note)}</td>"
-            "</tr>"
-        )
-
-    table = (
-        "<table class='t'>"
-        "<thead><tr>"
-        "<th>Pair</th><th>Start</th><th>Return</th>"
-        "<th>Leg1</th><th>A→B Out</th><th>Leg2</th>"
-        "<th>Final A</th><th>PnL(A)</th><th>PnL%</th><th>Note</th>"
-        "</tr></thead>"
-        f"<tbody>{''.join(trs)}</tbody></table>"
-    )
-    css = (
-        "body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft Yahei';margin:20px;color:#0f172a}"
-        ".t{border-collapse:collapse;width:100%}.t th,.t td{border:1px solid #e2e8f0;padding:8px}.t th{text-align:left;background:#f8fafc}"
-    )
-    return f"<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='refresh' content='{refresh}'><title>{esc(title)}</title><style>{css}</style></head><body><h2>{esc(title)}</h2>{table}</body></html>"
-
-async def run_two_leg_all_mode(
-    cfg_path: str,
-    out_html: str,
-    refresh: int,
-    verbose: bool,
-    once: bool,
-    universe_arg: str | None = None
-):
-    """
-    two-leg-all（动态资产）：
-      - 未传 --universe 时，使用 settings.universe；再无则 assets 全量
-      - 仅在两端资产在该链都有地址，且至少一个适配器允许该链时计算
-      - 每腿并发择优（Kyber/Odos）+ 软超时
-      - 每~2s 分段刷新，避免“长时间无反应”
-      - Debug 开关由 settings.debug 控制（默认 True）
-    """
-    app = load_config(cfg_path)
-    _init_debug(app, out_html, verbose)   # ← 只会执行一次
-
-    base_in = float(app.settings.get("probe_sizes", [10000])[0])
-
-    # 资产集合：CLI 覆盖 > settings.universe > assets 全量
-    if universe_arg:
-        symbols = [x.strip().upper() for x in universe_arg.split(",") if x.strip()]
-        symbols = [s for s in symbols if s in app.assets]
-    else:
-        symbols = _asset_universe(app, universe_arg)
-
-    
-
-    # 基础↔非基础 规则：如果你有 _base_assets / _skip_pair_by_base，请保留；否则去掉这段过滤也可
-    try:
-        base_set = _base_assets(app)
-        def _allow_pair(a, b): 
-            return not _skip_pair_by_base(base_set, a, b)  # True=允许（基础↔非基础），False=跳过
-    except Exception:
-        # 没有基础资产规则时，全部允许（除了 self-pair）
-        def _allow_pair(a, b): 
-            return a != b
-
-    title = "Two-Leg Scan — All Ordered Pairs (Dynamic Universe)"
-    if not os.path.exists(out_html):
-        _write_html(out_html, _render_two_leg_all(title, refresh, []))
-    # 每轮一开始立即刷新为进行中
-    _write_html(out_html, _render_two_leg_all(title, refresh, []))
-   
-    while True:
-        try:
-            rows: list[dict] = []
-            last_flush = 0.0
-
-            # 生成有序对
-            for a_sym in symbols:
-                for b_sym in symbols:
-                    if a_sym == b_sym or not _allow_pair(a_sym, b_sym):
-                        continue
-                    a = app.assets[a_sym]; b = app.assets[b_sym]
-
-                    # 共同链（两端有地址 + 至少一个适配器允许）
-                    shared = [c for c in _shared_chains(app, a, b)
-                              if (_adapter_allows_chain(app, "kyber", c) or _adapter_allows_chain(app, "odos", c))]
-                    if len(shared) < 2:
-                        continue
-
-                    addrA = {c.name: a.address[c.name] for c in shared}
-                    addrB = {c.name: b.address[c.name] for c in shared}
-                    amtA_wei = int(base_in * (10 ** a.decimals))
-
-                    # 起点链
-                    for i, ci in enumerate(shared):
-                        best1 = await _best_quote_out_wei(app, ci, addrA[ci.name], addrB[ci.name], amtA_wei)
-                        if not best1:
-                            continue
-                        leg1_adapter, outB_wei = best1
-                        mid_B = _from_wei(outB_wei, b.decimals)
-
-                        # 回链
-                        for j, cj in enumerate(shared):
-                            if j == i:
-                                continue
-                            amtB_wei = int(mid_B * (10 ** b.decimals))
-                            best2 = await _best_quote_out_wei(app, cj, addrB[cj.name], addrA[cj.name], amtB_wei)
-                            if not best2:
-                                continue
-
-                            leg2_adapter, outA_wei = best2
-                            final_A = _from_wei(outA_wei, a.decimals)
-                            pnl = final_A - base_in
-                            pnl_pct = (pnl / base_in * 100.0) if base_in > 0 else 0.0
-
-                            # ★ 当 pnl 为正时，调用规模优化器寻找更优 size
-                            if pnl > 0 and app.settings.get("size_opt_enable", True):
-                                # 构造回调：给定 size → 返回该路径 pnl（两腿最佳报价）
-                                async def _eval(sz: float):
-                                    return await _pnl_for_size(app, a, b, ci, cj, sz, soft_timeout_sec=float(app.settings.get("soft_timeout_sec", 5)))
-
-                                # 读一些可调参数（也可写死）
-                                base = float(base_in)
-                                cfg = OptimizeConfig(
-                                    initial_size = base,
-                                    min_size     = float(app.settings.get("size_opt_min", max(1.0, base/4))),
-                                    max_size     = float(app.settings.get("size_opt_max", base*64)),
-                                    method       = str(app.settings.get("size_opt_method", "double_then_golden")),
-                                    tol_rel      = float(app.settings.get("size_opt_tol_rel", 1e-3)),
-                                    tol_abs      = float(app.settings.get("size_opt_tol_abs", 1e-6)),
-                                    max_grows    = int(app.settings.get("size_opt_max_grows", 12)),
-                                    max_iter     = int(app.settings.get("size_opt_max_iter", 32)),
-                                    max_evals    = int(app.settings.get("size_opt_max_evals", 120)),
-                                    prefer_integer_size = bool(app.settings.get("size_opt_integer", False)),
-                                    # ★ 新增两行：
-                                    size_step    = float(app.settings.get("size_opt_step", 0)) or None,  # 例如 100；0/None 表示不限
-                                    round_mode   = str(app.settings.get("size_opt_round_mode", "round")).lower(),  # round/floor/ceil
-                                )
-                                try:
-                                    opt = await optimize_size_async(_eval, cfg)
-                                    if opt.best_pnl > pnl:
-                                        # 以最佳 size 再评一次，补一行“(opt)”展示
-                                        best_final = opt.best_pnl + opt.best_size
-                                        rows.append({
-                                            "pair": f"{a.symbol}/{b.symbol}",      # ★ 新增
-                                            "start": ci.name,
-                                            "ret": cj.name,
-                                            "leg1_adapter": leg1_adapter,  # 这里保留首次看到的适配器名；若想更新为“最佳size下的真实适配器”，可以在 _pnl_for_size 里一并返回细节
-                                            "mid_b": None,                  # 可留空或再算一次以展示
-                                            "leg2_adapter": leg2_adapter,
-                                            "final_a": best_final,
-                                            "pnl": opt.best_pnl,
-                                            "pnl_pct": (opt.best_pnl / opt.best_size * 100.0) if opt.best_size > 0 else 0.0,
-                                            "note": f"(opt) size≈{opt.best_size:,.2f}"
-                                        })
-                                except Exception:
-                                    # 静默失败，不影响主流程
-                                    pass
-
-                            rows.append({
-                                "pair": f"{a.symbol}/{b.symbol}",      # ★ 新增
-                                "pair": f"{a_sym}/{b_sym}",
-                                "start": ci.name,
-                                "ret": cj.name,
-                                "leg1_adapter": leg1_adapter,
-                                "mid_b_str": f"{mid_B:,.6f} {b_sym}",
-                                "leg2_adapter": leg2_adapter,
-                                "final_a_str": f"{final_A:,.6f} {a_sym}",
-                                "pnl_str": f"{pnl:,.6f} {a_sym}",
-                                "pnl_pct_str": f"{pnl_pct:,.4f}%"
-                            })
-
-                        # 分段刷新（每 ~2s 刷一次）
-                        now = time.time()
-                        if now - last_flush > 2:
-                            _write_html(out_html, _render_two_leg_all(title, refresh, rows))
-                            last_flush = now
-
-            # 本轮最终写出
-            _write_html(out_html, _render_two_leg_all(title, refresh, rows))
-
-        except Exception:
-            err_html = f"""<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="{refresh}">
-<title>two-leg-all error</title></head><body>
-<h2>two-leg-all error</h2>
-<pre style="white-space:pre-wrap">{(traceback.format_exc())}</pre>
-</body></html>"""
-            _write_html(out_html, err_html)
-
-        if once:
-            return
-        await asyncio.sleep(max(1, int(refresh)))
-
-
-
-
 # =============== CLI ===============
-
 # ---- 基础资产：配置与 CLI 覆盖 ----
 CLI_BASE_ASSETS: set[str] = set()
 
@@ -1048,12 +844,6 @@ def _skip_pair_by_base(base_set: set[str], a_sym: str, b_sym: str) -> bool:
     allow = (a_in ^ b_in)
     return not allow  # 返回 True=跳过
 
-
-
-
-
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--debug", action="store_true", help="开启调试面板并写日志（需要 logger_utils.py）")
@@ -1064,10 +854,7 @@ def main():
     ap.add_argument("--pair-spec", required=False,
         help='留空=自动遍历(USDT/USDC + USDT/USDE + 与 FRXUSD 双向); 例: "ethereum:USDT>USDE,plasma:USDT>USDE"')
     # 双腿遍历（单对）
-    ap.add_argument("--two-leg", required=False, help='形如 "USDT>USDC"；遍历共同链做 A->B->A 两腿回环')
-    # 双腿遍历（所有资产对）
-    ap.add_argument("--two-leg-all", action="store_true", help="对资产集合内的所有有序对做两腿回环遍历")
-    ap.add_argument("--universe", required=False, help='覆盖 settings.universe，逗号分隔，如 "USDT,USDC,USDE,FRXUSD"')
+    ap.add_argument("--two-leg",action="store_true",help="Enable two-leg mode (requires --pair-spec with two legs, e.g. ethereum:A>B,plasma:B>A)")
     ap.add_argument("--pair-html", required=True)
     ap.add_argument("--refresh", type=int, default=8)
     ap.add_argument("--verbose", action="store_true")
@@ -1082,12 +869,14 @@ def main():
     CLI_BASE_ASSETS = _parse_base_assets_arg(args.base_assets)
 
 
-    if args.two_leg_all:
-        asyncio.run(run_two_leg_all_mode(args.config, args.pair_html, args.refresh, args.verbose, args.once, args.universe))
-    elif args.two_leg:
-        asyncio.run(run_two_leg_mode(args.config, args.two_leg, args.pair_html, args.refresh, args.verbose, args.once))
-    else:
+    if args.two_leg:
+    # 两腿（watchlist 之前就是手动 pair-spec；我们后面会逐步改成 watchlist 驱动）
+        asyncio.run(run_two_leg_mode(args.config, args.pair_spec, args.pair_html, args.refresh, args.verbose, args.once))
+    elif args.pair_spec or args.pair_any:
+        # 单腿：指定资产对，在所有可用链对比最优单腿兑换
         asyncio.run(run_merged_mode(args.config, args.pair_spec, args.pair_html, args.refresh, args.verbose, args.once, args.pair_any))
+    else:
+        ap.error("请选择 --two-leg 或 --pair-spec/--pair-any 之一")
 
 
 if __name__ == "__main__":

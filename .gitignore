@@ -33,6 +33,7 @@ htmlcov/
 # 你项目生成的输出
 out/
 logs/
+scripts/
 *.log
 *.html
 

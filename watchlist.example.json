@@ -1,0 +1,16 @@
+[
+  {
+    "from_chain": "ethereum",
+    "to_chain": "plasma",
+    "asset_a": "USDT",
+    "asset_b": "sUSDe",
+    "base": 10000
+  },
+  {
+    "from_chain": "plasma",
+    "to_chain": "ethereum",
+    "asset_a": "USDT",
+    "asset_b": "sUSDe",
+    "base": 10000
+  }
+]

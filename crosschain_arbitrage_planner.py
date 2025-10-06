@@ -1,59 +1,10 @@
 from __future__ import annotations
 import os, json, time, argparse, asyncio, traceback
 from dataclasses import dataclass
-<<<<<<< HEAD
-from typing import Dict, Any, Tuple, List, Optional
-from size_optimizer import OptimizeConfig, optimize_size_async
-import math
-
-
-# 顶部（import 区域后面）
-try:
-    from logger_utils import DebugLogger
-except Exception:
-    class DebugLogger:
-        def __init__(self, enabled: bool = False): self.enabled = enabled
-        def setup(self, *a, **k): pass
-        def info(self, *a, **k): pass
-        def debug(self, *a, **k): pass
-        def warning(self, *a, **k): pass
-        def error(self, *a, **k): pass
-        def exception(self, *a, **k): pass
-        def panel(self, *a, **k): return ""
-        @staticmethod
-        def js_auto_refresh(refresh_sec: int) -> str: return ""
-
-DBG = DebugLogger(enabled=False)   # 占位，全局
-_DBG_SETUP_DONE = False            # ← 新增：只 setup 一次
-
-def _init_debug(app, out_html: str, verbose: bool):
-    global DBG, _DBG_SETUP_DONE
-    if _DBG_SETUP_DONE:
-        return
-    enabled = bool(app.settings.get("debug", True))
-    DBG = DebugLogger(enabled=enabled)
-    if DBG.enabled:
-        log_path = os.path.splitext(out_html)[0] + ".log"
-        DBG.setup(log_path, verbose=verbose)  # setup 内部会打印一次 initialized
-    _DBG_SETUP_DONE = True
-
-
-
-# =============== 基础设施 ===============
-
-async def _best_with_soft_timeout(coro, soft_timeout):
-    try:
-        return await asyncio.wait_for(coro, timeout=soft_timeout)
-    except Exception:
-        return None
-    
-
-=======
 from typing import Dict, Any,  List
 from size_optimizer import OptimizeConfig, optimize_size_async
 from leg_quote import LegQuote, TwoLegResult, LEG_OK, LEG_NO_ADDR, LEG_NO_QUOTE, LEG_ERROR
 from adapters import build_adapters, best_quote_leg
-
 
 from logger_utils import init_debug_logger, NullLogger
 # 全局兜底，避免未初始化时报 NameError
@@ -68,11 +19,64 @@ def _init_debug(app, out_html: str, verbose: bool):
 
 
 # =============== 基础设施 ===============
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
 def _ensure_dir(path: str):
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
+
+async def run_watchlist_mode(
+    app: AppConfig,  # 这里 app 是 str，需要先加载配置
+    watchlist_path: str,
+    out_html: str,
+    refresh: int,
+    once: bool,
+    verbose: bool = True
+) -> None:
+    """运行 watchlist 模式"""
+    _ensure_dir(os.path.dirname(out_html))
+    _write_placeholder_html(out_html, "Watchlist Mode", refresh)
+    
+    global DBG
+    DBG = init_debug_logger("watchlist", out_html, verbose)
+    
+    # 首先加载配置
+    app_config = load_config(app)
+    
+    pairs = _load_watchlist_json(watchlist_path)
+    DBG.info(f"[CHECK] Loaded pairs from watchlist: {len(pairs)}")
+    if not pairs:
+        DBG.error("No valid pairs found in watchlist")
+        return
+
+    # 使用已有的 Kyber 和 Odos adapters
+    quote_fns = {
+        "kyber": kyber_quote,
+        "odos": odos_quote
+    }
+    adapters = build_adapters(app_config, quote_fns)
+    DBG.info(f"[CHECK] Built adapters: {[a.name for a in adapters]}")
+
+    while True:
+        try:
+            results = await _process_watchlist(app_config, pairs, adapters)
+            DBG.info(f"[CHECK] Processed results count: {len(results) if results else 0}")
+            
+            html = render_watchlist_page("Watchlist Mode", refresh, results)
+            DBG.info("[CHECK] HTML rendered")
+            _write_html(out_html, html)
+            
+            if once:
+                break
+                
+            await asyncio.sleep(refresh)
+            
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            DBG.error(f"Error in watchlist mode: {e}")
+            if once:
+                break
+            await asyncio.sleep(refresh)
 
 def _write_placeholder_html(path: str, title: str, refresh: int):
     _ensure_dir(path)
@@ -113,20 +117,6 @@ def _fmt(x, decimals: int = 6, dash: str = "—") -> str:
         return str(x)
     return f"{xf:,.{decimals}f}"
 
-<<<<<<< HEAD
-def _fmt_pct(x, decimals: int = 4, dash: str = "—") -> str:
-    """百分数字符串；x 为 None/无效时显示 dash。"""
-    if x is None:
-        return dash
-    try:
-        xf = float(x)
-    except (TypeError, ValueError):
-        return str(x)
-    return f"{xf:,.{decimals}f}%"
-
-
-=======
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
 # =============== 配置与模型 ===============
 
 @dataclass
@@ -196,22 +186,7 @@ def _asset_universe(app, universe_str: str | None = None) -> list[str]:
     return [s for s in symbols if s in app.assets]
 
 
-<<<<<<< HEAD
-
-# 全局 Debug 开关（默认 True）
-def _get_debug_flag(app) -> bool:
-    try:
-        return bool(app.settings.get("debug", True))
-    except Exception:
-        return True
-
-
-
 # =============== 适配器白名单 ===============
-
-=======
-# =============== 适配器白名单 ===============
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
 def _adapter_allows_chain(app: AppConfig, adapter: str, chain: Chain) -> bool:
     """
     settings.adapter_support[adapter] 若配置了白名单，则只在白名单内的链上请求；
@@ -320,92 +295,6 @@ async def kyber_quote(app: AppConfig, chain: Chain, sell_addr: str, buy_addr: st
     body = (text or text2 or "")[:200]
     return {"ok": False, "adapter": "kyber", "err": f"HTTP {code or code2}", "where": f"GET {url1} / {url2}", "body": body}
 
-<<<<<<< HEAD
-
-# 替换原来的 _best_quote_out_wei Kyber和odos并发
-async def _best_quote_out_wei(app, chain, sell_addr, buy_addr, amount_wei):
-    """
-    并发向 Kyber/Odos 报价；
-    在 soft_timeout_sec 内收集已完成的结果，择优返回 (adapter_name, out_wei)；
-    超时则取消剩余任务并返回 None；单个任务异常不影响其它。
-    """
-    soft_timeout = float(app.settings.get("soft_timeout_sec", 5))
-
-    tasks = []
-    if _adapter_allows_chain(app, "kyber", chain):
-        tasks.append(asyncio.create_task(
-            kyber_quote(app, chain, sell_addr, buy_addr, amount_wei), name="Kyber"
-        ))
-    if _adapter_allows_chain(app, "odos", chain):
-        tasks.append(asyncio.create_task(
-            odos_quote(app, chain, sell_addr, buy_addr, amount_wei), name="Odos"
-        ))
-    if not tasks:
-        return None
-
-    done, pending = await asyncio.wait(
-        tasks, timeout=soft_timeout, return_when=asyncio.ALL_COMPLETED
-    )
-
-    # 取消并“吞掉”所有未完成任务，避免 CancelledError 冒泡
-    for p in pending:
-        p.cancel()
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
-
-    candidates = []
-    for t in done:
-        try:
-            res = t.result()
-        except BaseException:
-            continue
-        if isinstance(res, dict) and res.get("ok"):
-            name = t.get_name() or res.get("adapter", "?")
-            candidates.append((name, int(res["out_wei"])))
-
-    if not candidates:
-        return None
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    return candidates[0]
-
-async def _pnl_for_size(app, a_asset, b_asset, start_chain, ret_chain, size: float, soft_timeout_sec: float = 5.0):
-    """
-    给定下单规模 size（以 A 计价），在 start_chain 做 A→B，再在 ret_chain 做 B→A，返回净 PnL（final_A - size）。
-    - 只用每条腿的“最佳报价”（Kyber/Odos择优）
-    - 任一腿失败/超时，返回一个很小的负数（代表不可行）
-    """
-    # 兜底软超时
-    async def _with_to(coro):
-        try:
-            return await asyncio.wait_for(coro, timeout=soft_timeout_sec)
-        except Exception:
-            return None
-
-    # Leg1: start_chain 上 A → B
-    amtA_wei = int(size * (10 ** a_asset.decimals))
-    best1 = await _with_to(_best_quote_out_wei(
-        app, start_chain, a_asset.address[start_chain.name], b_asset.address[start_chain.name], amtA_wei
-    ))
-    if not best1:
-        return -1e30  # 不可行
-    _, outB_wei = best1
-    mid_B = outB_wei / (10 ** b_asset.decimals)
-
-    # Leg2: ret_chain 上 B → A
-    amtB_wei = int(mid_B * (10 ** b_asset.decimals))
-    best2 = await _with_to(_best_quote_out_wei(
-        app, ret_chain, b_asset.address[ret_chain.name], a_asset.address[ret_chain.name], amtB_wei
-    ))
-    if not best2:
-        return -1e30
-    _, outA_wei = best2
-    final_A = outA_wei / (10 ** a_asset.decimals)
-
-    return final_A - size
-
-
-=======
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
 # =============== 单腿“合并输出”模式（保留旧功能） ===============
 
 def _from_wei(amount: int, decimals: int) -> float:
@@ -419,11 +308,7 @@ def _render_page(title: str, refresh: int, rows: List[dict], debug_html: str = "
             table_rows.append(
                 f"<tr>"
                 f"<td style='text-align:left'>{esc(r['leg'])} "
-<<<<<<< HEAD
-                f"<span style='color:#64748b'>(base {r['base']} {r['sell']})</span></td>"
-=======
                 f"<span style='color:#64748b'>(base {r['sell']})</span></td>"
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
                 f"<td>{esc(r['adapter'])}</td>"
                 f"<td>{r['out_str']}</td>"
                 f"<td>{r['px_str']}</td>"
@@ -456,606 +341,6 @@ def _render_page(title: str, refresh: int, rows: List[dict], debug_html: str = "
 </body></html>"""
     return html
 
-<<<<<<< HEAD
-async def quote_one_leg_best(app: AppConfig, chain: Chain, sell: Asset, buy: Asset, base_in: float) -> dict | None:
-    amt_wei = int(base_in * (10 ** sell.decimals))
-    sell_addr = sell.address[chain.name]
-    buy_addr  = buy.address[chain.name]
-    best = await _best_quote_out_wei(app, chain, sell_addr, buy_addr, amt_wei)
-    if not best:
-        return None
-    adapter, out_wei = best
-    out = _from_wei(out_wei, buy.decimals)
-    px  = out / float(base_in)
-    return {
-        "leg": f"{chain.name}:{sell.symbol}>{buy.symbol}",
-        "sell": sell.symbol,
-        "buy": buy.symbol,
-        "base": base_in,
-        "adapter": adapter,
-        "out_str": f"{_fmt(out)} {buy.symbol}",
-        "px_str":  f"{_fmt(px)} {buy.symbol}/{sell.symbol}",
-    }
-
-def _has_addr(asset: Asset, chain_name: str) -> bool:
-    return chain_name in asset.address and bool(asset.address[chain_name])
-
-def _build_default_legs(app: AppConfig) -> List[str]:
-    """
-    自动枚举所有链上的交易腿（方向有序）：
-      - 资产集合来自 settings.universe 或 assets 全量
-      - 仅生成【基础 ↔ 非基础】的组合（见 _skip_pair_by_base）
-      - 该链需被至少一个适配器允许（adapter_support）
-      - 两端资产在该链必须都有有效地址
-    输出形如：["ethereum:USDT>USDE", "arbitrum:USDE>USDT", ...]
-    """
-    legs: List[str] = []
-    symbols = _asset_universe(app)
-
-    for cname, chain in app.chains.items():
-        # 适配器两个都不支持这条链 → 整链跳过
-        if not (_adapter_allows_chain(app, "kyber", chain) or _adapter_allows_chain(app, "odos", chain)):
-            continue
-
-        for s_sym, b_sym in _iter_asset_pairs(app, symbols):
-            s_asset = app.assets.get(s_sym)
-            b_asset = app.assets.get(b_sym)
-            if not s_asset or not b_asset:
-                continue
-            # 该链两端都要有地址
-            if cname not in s_asset.address or cname not in b_asset.address:
-                continue
-            if not s_asset.address[cname] or not b_asset.address[cname]:
-                continue
-
-            legs.append(f"{cname}:{s_sym}>{b_sym}")
-
-    return legs
-
-def _build_legs_for_pair_any(app: AppConfig, pair_any: str) -> List[str]:
-    """
-    输入 pair_any 形如 "USDE>USDC"（大小写不敏感）。
-    返回所有“同时存在两资产地址的链”的 legs 列表：["ethereum:USDE>USDC", "arbitrum:USDE>USDC", ...]
-    仅保留至少被一个适配器允许的链（adapter_support 白名单）。
-    """
-    if ">" not in pair_any:
-        raise ValueError('--pair-any 需要形如 "ASSET_A>ASSET_B"')
-    a_sym, b_sym = [x.strip().upper() for x in pair_any.split(">")]
-    if a_sym not in app.assets or b_sym not in app.assets:
-        raise ValueError(f"资产未配置: {a_sym} 或 {b_sym}")
-    a = app.assets[a_sym]
-    b = app.assets[b_sym]
-
-    legs: List[str] = []
-    for chain in app.chains.values():
-        # 至少一个适配器支持该链，否则跳过（避免无谓请求）
-        if not (_adapter_allows_chain(app, "kyber", chain) or _adapter_allows_chain(app, "odos", chain)):
-            continue
-        # 两资产在该链都要有地址
-        if _has_addr(a, chain.name) and _has_addr(b, chain.name):
-            legs.append(f"{chain.name}:{a_sym}>{b_sym}")
-    return legs
-
-
-
-async def run_merged_mode(cfg_path: str, pair_spec: str | None, out_html: str, refresh: int, verbose: bool, once: bool, pair_any: str | None = None):
-    app = load_config(cfg_path)
-    _init_debug(app, out_html, verbose)   # ← 只会执行一次
-
-
-    base_in = float(app.settings.get("probe_sizes", [10000])[0])
-    if not os.path.exists(out_html):
-        _write_placeholder_html(out_html, f"Merged Quotes Watch", refresh)
-
-     # ★ 新增：若提供 --pair-any，则按资产对自动枚举所有共同链
-    if pair_any:
-        auto_legs = _build_legs_for_pair_any(app, pair_any)
-        if not auto_legs:
-            # 没有共同链，写出友好提示页并退出/刷新
-            msg = f'No common chain for pair "{pair_any}" or all filtered by adapter_support.'
-            _write_html(out_html, f"""<!doctype html><html><head><meta charset="utf-8"><title>No Common Chain</title></head>
-<body><h3>{msg}</h3></body></html>""")
-            return
-        pair_spec = ",".join(auto_legs)
-
-
-    # pair-spec 若为空：自动遍历（USDT/USDC + USDT/USDE + 与 FRXUSD 双向）
-    if not pair_spec:
-        auto_legs = _build_default_legs(app)
-        pair_spec = ",".join(auto_legs)
-
-    def parse_leg(leg: str):
-        cpart, pair = leg.split(":")
-        s, b = pair.split(">")
-        chain = app.chains[cpart.lower()]
-        sell  = app.assets[s.upper()]
-        buy   = app.assets[b.upper()]
-        _ = sell.address[chain.name]; _ = buy.address[chain.name]
-        return chain, sell, buy
-
-    legs = [x.strip() for x in pair_spec.split(",") if x.strip()]
-    title = "Stable Pairs (USDT/USDC/USDE/FRXUSD) — Best of Kyber & Odos"
-
-    loop_idx = 0
-    while True:
-        t0 = time.time()
-        loop_idx += 1
-        try:
-            rows: List[dict] = []
-            legs_total = len(legs)
-            for leg in legs:
-                chain, sell, buy = parse_leg(leg)
-                row = await quote_one_leg_best(app, chain, sell, buy, base_in)
-                if row is not None:
-                    rows.append(row)
-
-            dur_ms = int((time.time() - t0) * 1000)
-            stats = {
-                "mode": "merged",
-                "loop": loop_idx,
-                "legs_total": legs_total,
-                "rows_rendered": len(rows),
-                "duration_ms": dur_ms,
-                "now": _now_str(),
-                "html_path": out_html
-            }
-            DBG.info("[merged] loop=%d legs=%d rows=%d dur=%dms", loop_idx, legs_total, len(rows), dur_ms)
-            debug_html = DBG.panel(stats)
-            head_extra = DBG.js_auto_refresh(refresh)
-
-            html = _render_page(title, refresh, rows, debug_html=debug_html, head_extra=head_extra)
-            _write_html(out_html, html)
-        except Exception:
-            DBG.exception("render loop crashed (merged)")
-            err_html = f"""<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="{refresh}">
-<title>pair-watch error</title></head><body>
-<h2>pair-watch error</h2>
-<pre style="white-space:pre-wrap">{(traceback.format_exc())}</pre>
-</body></html>"""
-            _write_html(out_html, err_html)
-
-        if once:
-            return
-        await asyncio.sleep(max(1, int(refresh)))
-
-# =============== 双腿遍历（单一资产对） ===============
-
-def _shared_chains(app: AppConfig, a: Asset, b: Asset) -> List[Chain]:
-    names = [cn for cn in app.chains.keys() if _has_addr(a, cn) and _has_addr(b, cn)]
-    return [app.chains[n] for n in names]
-
-def _render_two_leg(title: str, refresh: int, rows: list[dict], a_sym: str, b_sym: str, base_in: float) -> str:
-    # 简洁的转义与格式化（确保你已有 _fmt / _fmt_pct，或用这两个内联版）
-    def esc(s):
-        s = "" if s is None else str(s)
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    def fmt(x, decimals: int = 6, dash: str = "—"):
-        if x is None:
-            return dash
-        try:
-            xf = float(x)
-        except (TypeError, ValueError):
-            return str(x)
-        return f"{xf:,.{decimals}f}"
-
-    def fmt_pct(x, decimals: int = 4, dash: str = "—"):
-        if x is None:
-            return dash
-        try:
-            xf = float(x)
-        except (TypeError, ValueError):
-            return str(x)
-        return f"{xf:,.{decimals}f}%"
-
-    trs = []
-    for r in (rows or []):
-        start = r.get("start", "?")             # 从 row 取，不再用外部 ci/cj
-        ret   = r.get("ret",   "?")
-        leg1  = r.get("leg1_adapter", "-")
-        leg2  = r.get("leg2_adapter", "-")
-        mid_b_val   = r.get("mid_b")
-        final_a_val = r.get("final_a")
-        pnl_val     = r.get("pnl")
-        pnl_pct_val = r.get("pnl_pct")
-        note        = r.get("note", "")
-
-        trs.append(
-            "<tr>"
-            f"<td>{esc(start)}</td>"
-            f"<td>{esc(ret)}</td>"
-            f"<td>{esc(leg1)}</td>"
-            f"<td>{fmt(mid_b_val)}{' ' + esc(b_sym) if mid_b_val is not None else ''}</td>"
-            f"<td>{esc(leg2)}</td>"
-            f"<td>{fmt(final_a_val)}{' ' + esc(a_sym) if final_a_val is not None else ''}</td>"
-            f"<td>{fmt(pnl_val)}{' ' + esc(a_sym) if pnl_val is not None else ''}</td>"
-            f"<td>{fmt_pct(pnl_pct_val)}</td>"
-            f"<td>{esc(note)}</td>"
-            "</tr>"
-        )
-
-    table = (
-        "<table class='t'>"
-        "<thead><tr>"
-        "<th>Start</th><th>Return</th><th>Leg1</th>"
-        f"<th>A→B Out ({esc(b_sym)})</th>"
-        "<th>Leg2</th>"
-        f"<th>Final A ({esc(a_sym)})</th>"
-        f"<th>PnL ({esc(a_sym)})</th>"
-        "<th>PnL%</th><th>Note</th>"
-        "</tr></thead>"
-        f"<tbody>{''.join(trs)}</tbody></table>"
-    )
-
-    css = (
-        "body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft YaHei';"
-        "margin:20px;color:#0f172a}"
-        ".t{border-collapse:collapse;width:100%}"
-        ".t th,.t td{border:1px solid #e2e8f0;padding:8px}"
-        ".t th{text-align:left;background:#f8fafc}"
-        "h2{margin:0 0 12px 0}"
-        ".sub{color:#475569;margin:0 0 16px 0}"
-    )
-
-    subtitle = f"Base In: {fmt(base_in)} {esc(a_sym)} · Auto-refresh: {int(refresh)}s"
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"<meta http-equiv='refresh' content='{int(refresh)}'>"
-        f"<title>{esc(title)}</title><style>{css}</style></head>"
-        f"<body><h2>{esc(title)}</h2><div class='sub'>{esc(subtitle)}</div>{table}</body></html>"
-    )
-
-async def run_two_leg_mode(cfg_path: str, two_leg: str, out_html: str, refresh: int, verbose: bool, once: bool):
-    """
-    手动 two-leg：严格按用户指定的 A>B 执行；不做基础资产/非基础资产判断。
-    逻辑：
-      - 找 A/B 共同链列表 C（两资产都在该链上有地址）
-      - 以 C[i] 为起点：A->B，用 base_in，得到 mid_B
-      - 再对每个 C[j!=i]：用 mid_B 在 C[j] 做 B->A，得到 final_A
-      - 计算 pnl = final_A - base_in，记录一行
-      - 任意一步拿不到报价 -> 跳过该路径
-    """
-    app = load_config(cfg_path)
-    _init_debug(app, out_html, verbose)   # ← 只会执行一次
-
-    base_in = float(app.settings.get("probe_sizes", [10000])[0])
-    if not os.path.exists(out_html):
-        _write_placeholder_html(out_html, f"Two-Leg Scan", refresh)
-
-    if ">" not in two_leg:
-        raise ValueError("--two-leg 形如 USDT>USDC")
-    a_sym, b_sym = [x.strip().upper() for x in two_leg.split(">")]
-    if a_sym not in app.assets or b_sym not in app.assets:
-        raise ValueError(f"资产未配置: {a_sym} 或 {b_sym}")
-    a = app.assets[a_sym]; b = app.assets[b_sym]
-
-    # 仅保留适配器允许的共同链
-    shared = _shared_chains(app, a, b)
-    shared = [c for c in shared if (_adapter_allows_chain(app, "kyber", c) or _adapter_allows_chain(app, "odos", c))]
-    title = f"Two-Leg Scan — {a_sym}/{b_sym}"
-
-    while True:
-        try:
-            rows: List[dict] = []
-            if len(shared) >= 2:
-                addrA = {c.name: a.address[c.name] for c in shared}
-                addrB = {c.name: b.address[c.name] for c in shared}
-
-                amtA_wei = int(base_in * (10 ** a.decimals))
-                for i, ci in enumerate(shared):
-                    # 第1腿：ci 上 A->B（并发择优 + 软超时在 _best_quote_out_wei 内部处理）
-                    best1 = await _best_quote_out_wei(app, ci, addrA[ci.name], addrB[ci.name], amtA_wei)
-                    if not best1:
-                        continue
-                    leg1_adapter, outB_wei = best1
-                    mid_B = _from_wei(outB_wei, b.decimals)
-
-                    # 第2腿：在其他链 cj 上 B->A（额外套软超时，避免卡住）
-                    for j, cj in enumerate(shared):
-                        if j == i:
-                            continue
-                        amtB_wei = int(mid_B * (10 ** b.decimals))
-                        best2 = await _best_quote_out_wei(app, cj, addrB[cj.name], addrA[cj.name], amtB_wei)
-                        if not best2:
-                            continue
-
-                        leg2_adapter, outA_wei = best2
-                        final_A = _from_wei(outA_wei, a.decimals)
-                        pnl = final_A - base_in
-                        pnl_pct = (pnl / base_in * 100.0) if base_in > 0 else 0.0
-
-                        # ★ 当 pnl 为正时，调用规模优化器寻找更优 size
-                        if pnl > 0 and app.settings.get("size_opt_enable", True):
-                            # 构造回调：给定 size → 返回该路径 pnl（两腿最佳报价）
-                            async def _eval(sz: float):
-                                return await _pnl_for_size(app, a, b, ci, cj, sz, soft_timeout_sec=float(app.settings.get("soft_timeout_sec", 5)))
-
-                            # 读一些可调参数（也可写死）
-                            base = float(base_in)
-                            cfg = OptimizeConfig(
-                                initial_size = base,
-                                min_size     = float(app.settings.get("size_opt_min", max(1.0, base/4))),
-                                max_size     = float(app.settings.get("size_opt_max", base*64)),
-                                method       = str(app.settings.get("size_opt_method", "double_then_golden")),
-                                tol_rel      = float(app.settings.get("size_opt_tol_rel", 1e-3)),
-                                tol_abs      = float(app.settings.get("size_opt_tol_abs", 1e-6)),
-                                max_grows    = int(app.settings.get("size_opt_max_grows", 12)),
-                                max_iter     = int(app.settings.get("size_opt_max_iter", 32)),
-                                max_evals    = int(app.settings.get("size_opt_max_evals", 120)),
-                                prefer_integer_size = bool(app.settings.get("size_opt_integer", False)),
-                                # ★ 新增两行：
-                                size_step    = float(app.settings.get("size_opt_step", 0)) or None,  # 例如 100；0/None 表示不限
-                                round_mode   = str(app.settings.get("size_opt_round_mode", "round")).lower(),  # round/floor/ceil
-                            )
-                            try:
-                                opt = await optimize_size_async(_eval, cfg)
-                                if opt.best_pnl > pnl:
-                                    # 以最佳 size 再评一次，补一行“(opt)”展示
-                                    best_final = opt.best_pnl + opt.best_size
-                                    rows.append({
-                                        "pair": f"{a.symbol}/{b.symbol}",      # ★ 也加在 opt 行
-                                        "start": ci.name,
-                                        "ret": cj.name,
-                                        "leg1_adapter": leg1_adapter,  # 这里保留首次看到的适配器名；若想更新为“最佳size下的真实适配器”，可以在 _pnl_for_size 里一并返回细节
-                                        "mid_b": None,                  # 可留空或再算一次以展示
-                                        "leg2_adapter": leg2_adapter,
-                                        "final_a": best_final,
-                                        "pnl": opt.best_pnl,
-                                        "pnl_pct": (opt.best_pnl / opt.best_size * 100.0) if opt.best_size > 0 else 0.0,
-                                        "note": f"(opt) size≈{opt.best_size:,.2f}"
-                                    })
-                            except Exception:
-                                # 静默失败，不影响主流程
-                                pass
-
-
-                        rows.append({
-                            "pair": f"{a.symbol}/{b.symbol}",      # ★ 也加在 opt 行
-                            "start": ci.name,
-                            "ret": cj.name,
-                            "leg1_adapter": leg1_adapter,
-                            "mid_b": mid_B,
-                            "leg2_adapter": leg2_adapter,
-                            "final_a": final_A,
-                            "pnl": pnl,
-                            "pnl_pct": pnl_pct
-                        })
-            html = _render_two_leg(title, refresh, rows, a_sym, b_sym, base_in)
-            _write_html(out_html, html)
-        except Exception:
-            err_html = f"""<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="{refresh}">
-<title>two-leg error</title></head><body>
-<h2>two-leg error</h2>
-<pre style="white-space:pre-wrap">{(traceback.format_exc())}</pre>
-</body></html>"""
-            _write_html(out_html, err_html)
-        if once:
-            return
-        await asyncio.sleep(max(1, int(refresh)))
-
-
-
-
-# =============== 双腿遍历（自动遍历所有资产对） ===============
-def _render_two_leg_all(title: str, refresh: int, rows: list[dict]) -> str:
-    esc = lambda s: ("" if s is None else str(s)).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-    trs = []
-    for r in rows or []:
-        pair = r.get("pair") or f"{r.get('a_sym','?')}/{r.get('b_sym','?')}"
-        start = r.get("start","?")
-        ret   = r.get("ret","?")
-        leg1  = r.get("leg1_adapter","-")
-        out_b = r.get("mid_b","-")
-        leg2  = r.get("leg2_adapter","-")
-        final_a = r.get("final_a","-")
-        pnl   = r.get("pnl","-")
-        pnl_pct = r.get("pnl_pct","-")
-        note  = r.get("note","")
-
-        trs.append(
-            "<tr>"
-            f"<td>{esc(pair)}</td>"
-            f"<td>{esc(start)}</td>"
-            f"<td>{esc(ret)}</td>"
-            f"<td>{esc(leg1)}</td>"
-            f"<td>{esc(out_b)}</td>"
-            f"<td>{esc(leg2)}</td>"
-            f"<td>{esc(final_a)}</td>"
-            f"<td>{esc(pnl)}</td>"
-            f"<td>{esc(pnl_pct)}</td>"
-            f"<td>{esc(note)}</td>"
-            "</tr>"
-        )
-
-    table = (
-        "<table class='t'>"
-        "<thead><tr>"
-        "<th>Pair</th><th>Start</th><th>Return</th>"
-        "<th>Leg1</th><th>A→B Out</th><th>Leg2</th>"
-        "<th>Final A</th><th>PnL(A)</th><th>PnL%</th><th>Note</th>"
-        "</tr></thead>"
-        f"<tbody>{''.join(trs)}</tbody></table>"
-    )
-    css = (
-        "body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft Yahei';margin:20px;color:#0f172a}"
-        ".t{border-collapse:collapse;width:100%}.t th,.t td{border:1px solid #e2e8f0;padding:8px}.t th{text-align:left;background:#f8fafc}"
-    )
-    return f"<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='refresh' content='{refresh}'><title>{esc(title)}</title><style>{css}</style></head><body><h2>{esc(title)}</h2>{table}</body></html>"
-
-async def run_two_leg_all_mode(
-    cfg_path: str,
-    out_html: str,
-    refresh: int,
-    verbose: bool,
-    once: bool,
-    universe_arg: str | None = None
-):
-    """
-    two-leg-all（动态资产）：
-      - 未传 --universe 时，使用 settings.universe；再无则 assets 全量
-      - 仅在两端资产在该链都有地址，且至少一个适配器允许该链时计算
-      - 每腿并发择优（Kyber/Odos）+ 软超时
-      - 每~2s 分段刷新，避免“长时间无反应”
-      - Debug 开关由 settings.debug 控制（默认 True）
-    """
-    app = load_config(cfg_path)
-    _init_debug(app, out_html, verbose)   # ← 只会执行一次
-
-    base_in = float(app.settings.get("probe_sizes", [10000])[0])
-
-    # 资产集合：CLI 覆盖 > settings.universe > assets 全量
-    if universe_arg:
-        symbols = [x.strip().upper() for x in universe_arg.split(",") if x.strip()]
-        symbols = [s for s in symbols if s in app.assets]
-    else:
-        symbols = _asset_universe(app, universe_arg)
-
-    
-
-    # 基础↔非基础 规则：如果你有 _base_assets / _skip_pair_by_base，请保留；否则去掉这段过滤也可
-    try:
-        base_set = _base_assets(app)
-        def _allow_pair(a, b): 
-            return not _skip_pair_by_base(base_set, a, b)  # True=允许（基础↔非基础），False=跳过
-    except Exception:
-        # 没有基础资产规则时，全部允许（除了 self-pair）
-        def _allow_pair(a, b): 
-            return a != b
-
-    title = "Two-Leg Scan — All Ordered Pairs (Dynamic Universe)"
-    if not os.path.exists(out_html):
-        _write_html(out_html, _render_two_leg_all(title, refresh, []))
-    # 每轮一开始立即刷新为进行中
-    _write_html(out_html, _render_two_leg_all(title, refresh, []))
-   
-    while True:
-        try:
-            rows: list[dict] = []
-            last_flush = 0.0
-
-            # 生成有序对
-            for a_sym in symbols:
-                for b_sym in symbols:
-                    if a_sym == b_sym or not _allow_pair(a_sym, b_sym):
-                        continue
-                    a = app.assets[a_sym]; b = app.assets[b_sym]
-
-                    # 共同链（两端有地址 + 至少一个适配器允许）
-                    shared = [c for c in _shared_chains(app, a, b)
-                              if (_adapter_allows_chain(app, "kyber", c) or _adapter_allows_chain(app, "odos", c))]
-                    if len(shared) < 2:
-                        continue
-
-                    addrA = {c.name: a.address[c.name] for c in shared}
-                    addrB = {c.name: b.address[c.name] for c in shared}
-                    amtA_wei = int(base_in * (10 ** a.decimals))
-
-                    # 起点链
-                    for i, ci in enumerate(shared):
-                        best1 = await _best_quote_out_wei(app, ci, addrA[ci.name], addrB[ci.name], amtA_wei)
-                        if not best1:
-                            continue
-                        leg1_adapter, outB_wei = best1
-                        mid_B = _from_wei(outB_wei, b.decimals)
-
-                        # 回链
-                        for j, cj in enumerate(shared):
-                            if j == i:
-                                continue
-                            amtB_wei = int(mid_B * (10 ** b.decimals))
-                            best2 = await _best_quote_out_wei(app, cj, addrB[cj.name], addrA[cj.name], amtB_wei)
-                            if not best2:
-                                continue
-
-                            leg2_adapter, outA_wei = best2
-                            final_A = _from_wei(outA_wei, a.decimals)
-                            pnl = final_A - base_in
-                            pnl_pct = (pnl / base_in * 100.0) if base_in > 0 else 0.0
-
-                            # ★ 当 pnl 为正时，调用规模优化器寻找更优 size
-                            if pnl > 0 and app.settings.get("size_opt_enable", True):
-                                # 构造回调：给定 size → 返回该路径 pnl（两腿最佳报价）
-                                async def _eval(sz: float):
-                                    return await _pnl_for_size(app, a, b, ci, cj, sz, soft_timeout_sec=float(app.settings.get("soft_timeout_sec", 5)))
-
-                                # 读一些可调参数（也可写死）
-                                base = float(base_in)
-                                cfg = OptimizeConfig(
-                                    initial_size = base,
-                                    min_size     = float(app.settings.get("size_opt_min", max(1.0, base/4))),
-                                    max_size     = float(app.settings.get("size_opt_max", base*64)),
-                                    method       = str(app.settings.get("size_opt_method", "double_then_golden")),
-                                    tol_rel      = float(app.settings.get("size_opt_tol_rel", 1e-3)),
-                                    tol_abs      = float(app.settings.get("size_opt_tol_abs", 1e-6)),
-                                    max_grows    = int(app.settings.get("size_opt_max_grows", 12)),
-                                    max_iter     = int(app.settings.get("size_opt_max_iter", 32)),
-                                    max_evals    = int(app.settings.get("size_opt_max_evals", 120)),
-                                    prefer_integer_size = bool(app.settings.get("size_opt_integer", False)),
-                                    # ★ 新增两行：
-                                    size_step    = float(app.settings.get("size_opt_step", 0)) or None,  # 例如 100；0/None 表示不限
-                                    round_mode   = str(app.settings.get("size_opt_round_mode", "round")).lower(),  # round/floor/ceil
-                                )
-                                try:
-                                    opt = await optimize_size_async(_eval, cfg)
-                                    if opt.best_pnl > pnl:
-                                        # 以最佳 size 再评一次，补一行“(opt)”展示
-                                        best_final = opt.best_pnl + opt.best_size
-                                        rows.append({
-                                            "pair": f"{a.symbol}/{b.symbol}",      # ★ 新增
-                                            "start": ci.name,
-                                            "ret": cj.name,
-                                            "leg1_adapter": leg1_adapter,  # 这里保留首次看到的适配器名；若想更新为“最佳size下的真实适配器”，可以在 _pnl_for_size 里一并返回细节
-                                            "mid_b": None,                  # 可留空或再算一次以展示
-                                            "leg2_adapter": leg2_adapter,
-                                            "final_a": best_final,
-                                            "pnl": opt.best_pnl,
-                                            "pnl_pct": (opt.best_pnl / opt.best_size * 100.0) if opt.best_size > 0 else 0.0,
-                                            "note": f"(opt) size≈{opt.best_size:,.2f}"
-                                        })
-                                except Exception:
-                                    # 静默失败，不影响主流程
-                                    pass
-
-                            rows.append({
-                                "pair": f"{a.symbol}/{b.symbol}",      # ★ 新增
-                                "pair": f"{a_sym}/{b_sym}",
-                                "start": ci.name,
-                                "ret": cj.name,
-                                "leg1_adapter": leg1_adapter,
-                                "mid_b_str": f"{mid_B:,.6f} {b_sym}",
-                                "leg2_adapter": leg2_adapter,
-                                "final_a_str": f"{final_A:,.6f} {a_sym}",
-                                "pnl_str": f"{pnl:,.6f} {a_sym}",
-                                "pnl_pct_str": f"{pnl_pct:,.4f}%"
-                            })
-
-                        # 分段刷新（每 ~2s 刷一次）
-                        now = time.time()
-                        if now - last_flush > 2:
-                            _write_html(out_html, _render_two_leg_all(title, refresh, rows))
-                            last_flush = now
-
-            # 本轮最终写出
-            _write_html(out_html, _render_two_leg_all(title, refresh, rows))
-
-        except Exception:
-            err_html = f"""<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="{refresh}">
-<title>two-leg-all error</title></head><body>
-<h2>two-leg-all error</h2>
-<pre style="white-space:pre-wrap">{(traceback.format_exc())}</pre>
-</body></html>"""
-            _write_html(out_html, err_html)
-
-        if once:
-            return
-        await asyncio.sleep(max(1, int(refresh)))
-
-
-
-
-# =============== CLI ===============
-
-=======
 def render_legs_page(title: str, refresh: int, legs: list[LegQuote], head_extra: str = "") -> str:
     css = (
         "body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft YaHei';"
@@ -1377,134 +662,130 @@ def _load_watchlist_json(path: str) -> list[dict]:
             DBG.warn("[watchlist] item %d not a dict, skip", i)
             continue
 
-        # 适配新的字段名
+        # 适配新的字段名称
         try:
-            from_chain = it.get("A_chain")
-            to_chain = it.get("B_chain")
-            a_sym = it.get("A")
-            b_sym = it.get("B")
-            base = it.get("base")
-            a_address = it.get("A_address")
-            b_address = it.get("B_address")
-
-            if not (from_chain and to_chain and a_sym and b_sym):
-                DBG.warn("[watchlist] item %d missing required fields, skip: %s", i, it)
-                continue
-
-            norm_list.append({
-                "from_chain": str(from_chain).lower(),
-                "to_chain": str(to_chain).lower(),
-                "a": str(a_sym).upper(),
-                "b": str(b_sym).upper(),
-                "base": float(base) if base is not None else None,
-                "A_address": str(a_address) if a_address else None,
-                "B_address": str(b_address) if b_address else None
-            })
-        except Exception as e:
+            pair_spec = {
+                "from_chain": str(it["A_chain"]).lower(),
+                "to_chain": str(it["B_chain"]).lower(),
+                "a": str(it["A"]).upper(),
+                "b": str(it["B"]).upper(),
+                "base": float(it["base"]) if "base" in it else None,
+                "A_address": str(it["A_address"]) if "A_address" in it else None,
+                "B_address": str(it["B_address"]) if "B_address" in it else None
+            }
+            norm_list.append(pair_spec)
+        except (KeyError, ValueError) as e:
             DBG.warn("[watchlist] item %d parse error, skip: %s", i, e)
             continue
 
     return norm_list
 
-async def run_watchlist_mode(cfg_path: str,
-                             watchlist_path: str,
-                             out_html: str,
-                             refresh: int,
-                             verbose: bool,
-                             once: bool):
-    """
-    Watchlist：并发执行每条两腿报价，逐条渲染为 TwoLegResult。
-    并发度与超时从 config.settings 读取（有默认值），不增加 CLI 参数。
-    """
-    app = load_config(cfg_path)
-    _init_debug(app, out_html, verbose)
+async def _process_watchlist(app: AppConfig, pairs: list[dict], adapters) -> List[TwoLegResult]:
+    """处理 watchlist 中的交易对"""
+    results = []
+    DBG.info(f"[CHECK] Processing {len(pairs)} pairs")
 
-    default_base   = float(app.settings.get("default_base_in", 10_000))
-    max_conc       = int(app.settings.get("watchlist_max_concurrency", 6))
-    item_timeout_s = float(app.settings.get("watchlist_item_timeout_sec", 15.0))
-    sem = asyncio.Semaphore(max_conc)
+    for i, pair in enumerate(pairs):
+        from_chain = pair["from_chain"]
+        to_chain = pair["to_chain"]
+        token_a = pair["a"]
+        token_b = pair["b"]
+        base = pair.get("base")
+        a_address = pair.get("A_address")
+        b_address = pair.get("B_address")
 
-    loop_idx = 0
-    while True:
-        loop_idx += 1
-        t0 = time.time()
-
+        DBG.info(f"[CHECK] Processing pair {i+1}: {from_chain}:{token_a} > {to_chain}:{token_b}")
         try:
-            items = _load_watchlist_json(watchlist_path)
+            result = await analyze_pair(
+                app=app,
+                adapters=adapters,
+                from_chain=from_chain,
+                to_chain=to_chain,
+                a=token_a,
+                b=token_b,
+                base_in_a=base,
+                a_address=a_address,
+                b_address=b_address
+            )
+            DBG.info(f"[CHECK] Pair {i+1} result status: {result.status}")
+            results.append(result)
         except Exception as e:
-            DBG.error("load watchlist failed: %s", e)
-            html = f"<!doctype html><meta charset='utf-8'><pre>watchlist error: {e}</pre>"
-            try: _write_html(out_html, html)
-            except: pass
-            return
+            DBG.error(f"Error processing pair {i+1} {pair}: {e}")
+            continue
 
-        async def _handle(idx: int, it: dict):
-            ci_name = it["from_chain"]; cj_name = it["to_chain"]
-            a_sym   = it["a"];          b_sym   = it["b"]
-            base_in = float(it["base"]) if it.get("base") is not None else default_base
+    DBG.info(f"[CHECK] Finished processing all pairs, got {len(results)} results")
+    return results
 
-            # 先解析链，链名错误直接返回一条错误行
-            try:
-                ci = app.chains[ci_name]; cj = app.chains[cj_name]
-            except KeyError as e:
-                return TwoLegResult(
-                    from_chain=ci_name, to_chain=cj_name, a=a_sym, b=b_sym,
-                    base_in_a=base_in,
-                    leg1=LegQuote(ci_name, a_sym, b_sym, base_in, None, None, 0, "-", LEG_ERROR, f"unknown chain: {e}"),
-                    leg2=None, final_a=None, pnl=None, pnl_pct=None,
-                    status=LEG_ERROR, note=f"unknown chain: {e}"
-                )
-
-            # 用信号量限制并发；每个 item 再包一层总超时，避免卡住
-            async with sem:
-                try:
-                    return await asyncio.wait_for(
-                        quote_two_leg_once(app, ci, cj, a_sym, b_sym, base_in),
-                        timeout=item_timeout_s
-                    )
-                except asyncio.TimeoutError:
-                    return TwoLegResult(
-                        from_chain=ci.name, to_chain=cj.name, a=a_sym, b=b_sym,
-                        base_in_a=base_in,
-                        leg1=LegQuote(ci.name, a_sym, b_sym, base_in, None, None, 0, "-", LEG_NO_QUOTE, f"item-timeout {item_timeout_s}s"),
-                        leg2=None, final_a=None, pnl=None, pnl_pct=None,
-                        status=LEG_NO_QUOTE, note=f"item-timeout {item_timeout_s}s"
-                    )
-                except Exception as e:
-                    return TwoLegResult(
-                        from_chain=ci.name, to_chain=cj.name, a=a_sym, b=b_sym,
-                        base_in_a=base_in,
-                        leg1=LegQuote(ci.name, a_sym, b_sym, base_in, None, None, 0, "-", LEG_ERROR, "run error"),
-                        leg2=None, final_a=None, pnl=None, pnl_pct=None,
-                        status=LEG_ERROR, note=str(e)
-                    )
-
-        # 保持顺序：gather 会按 tasks 顺序返回
-        tasks = [ _handle(i, it) for i, it in enumerate(items) ]
-        rows  = await asyncio.gather(*tasks)
-
-        dur_ms = int((time.time() - t0) * 1000)
-        DBG.info("[watchlist] loop=%d items=%d dur=%dms conc=%d timeout=%.1fs",
-                 loop_idx, len(items), dur_ms, max_conc, item_timeout_s)
-
-        title = "Watchlist (two-leg)"
-        head_extra = DBG.js_auto_refresh(refresh) if hasattr(DBG, "js_auto_refresh") else ""
-        html = render_watchlist_page(title, refresh, rows, head_extra=head_extra)
-
-        try:
-            _write_html(out_html, html)
-        except Exception as e:
-            DBG.error("write html failed: %s", e)
-
-        if once:
-            break
-        try:
-            await asyncio.sleep(int(refresh))
-        except asyncio.CancelledError:
-            break
-
+async def analyze_pair(
+    app: AppConfig,
+    adapters,
+    from_chain: str,
+    to_chain: str,
+    a: str,
+    b: str,
+    base_in_a: float,
+    a_address: str = None,
+    b_address: str = None
+) -> TwoLegResult:
+    """分析单个交易对，返回两腿交易结果"""
+    try:
+        # 获取链的配置
+        DBG.info(f"[DEBUG] Getting chain configs for {from_chain} and {to_chain}")
+        ci = app.chains[from_chain]
+        cj = app.chains[to_chain]
+        
+        # 记录关键参数
+        DBG.info(f"[DEBUG] Quote params: {a}>{b} base_in={base_in_a}")
+        
+        # 调用已有的 quote_two_leg_once 函数
+        result = await quote_two_leg_once(
+            app=app,
+            ci=ci,
+            cj=cj,
+            a_sym=a,
+            b_sym=b,
+            base_in_a=base_in_a
+        )
+        
+        # 记录结果状态
+        DBG.info(f"[DEBUG] Quote result: status={result.status}, pnl={result.pnl}, note={result.note}")
+        return result
+        
+    except KeyError as e:
+        error_msg = f"Chain not found: {str(e)}"
+        DBG.error(error_msg)
+        return TwoLegResult(
+            from_chain=from_chain,
+            to_chain=to_chain,
+            a=a,
+            b=b,
+            base_in_a=base_in_a,
+            leg1=None,
+            leg2=None,
+            final_a=None,
+            pnl=None,
+            pnl_pct=None,
+            status=LEG_ERROR,
+            note=error_msg
+        )
+    except Exception as e:
+        error_msg = f"Analysis error: {str(e)}\n{traceback.format_exc()}"
+        DBG.error(error_msg)
+        return TwoLegResult(
+            from_chain=from_chain,
+            to_chain=to_chain,
+            a=a,
+            b=b,
+            base_in_a=base_in_a,
+            leg1=None,
+            leg2=None,
+            final_a=None,
+            pnl=None,
+            pnl_pct=None,
+            status=LEG_ERROR,
+            note=error_msg
+        )
 # =============== CLI ===============
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
 # ---- 基础资产：配置与 CLI 覆盖 ----
 CLI_BASE_ASSETS: set[str] = set()
 
@@ -1535,31 +816,10 @@ def _skip_pair_by_base(base_set: set[str], a_sym: str, b_sym: str) -> bool:
     allow = (a_in ^ b_in)
     return not allow  # 返回 True=跳过
 
-<<<<<<< HEAD
-
-
-
-
-
-
-=======
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--debug", action="store_true", help="开启调试面板并写日志（需要 logger_utils.py）")
     ap.add_argument("--log-file", required=False, help="日志文件路径；缺省为与HTML同名的 .log")
-<<<<<<< HEAD
-
-    ap.add_argument("--config", required=True)
-    # 单腿“合并输出”模式
-    ap.add_argument("--pair-spec", required=False,
-        help='留空=自动遍历(USDT/USDC + USDT/USDE + 与 FRXUSD 双向); 例: "ethereum:USDT>USDE,plasma:USDT>USDE"')
-    # 双腿遍历（单对）
-    ap.add_argument("--two-leg", required=False, help='形如 "USDT>USDC"；遍历共同链做 A->B->A 两腿回环')
-    # 双腿遍历（所有资产对）
-    ap.add_argument("--two-leg-all", action="store_true", help="对资产集合内的所有有序对做两腿回环遍历")
-    ap.add_argument("--universe", required=False, help='覆盖 settings.universe，逗号分隔，如 "USDT,USDC,USDE,FRXUSD"')
-=======
     ap.add_argument("--config", required=True)
     
     #watchList Mode
@@ -1568,7 +828,6 @@ def main():
     ap.add_argument("--pair-spec", required=False,help='留空=自动遍历(USDT/USDC + USDT/USDE + 与 FRXUSD 双向); 例: "ethereum:USDT>USDE,plasma:USDT>USDE"')
     # 双腿遍历（单对）
     ap.add_argument("--two-leg",action="store_true",help="Enable two-leg mode (requires --pair-spec with two legs, e.g. ethereum:A>B,plasma:B>A)")
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
     ap.add_argument("--pair-html", required=True)
     ap.add_argument("--refresh", type=int, default=8)
     ap.add_argument("--verbose", action="store_true")
@@ -1582,15 +841,6 @@ def main():
     global CLI_BASE_ASSETS
     CLI_BASE_ASSETS = _parse_base_assets_arg(args.base_assets)
 
-<<<<<<< HEAD
-
-    if args.two_leg_all:
-        asyncio.run(run_two_leg_all_mode(args.config, args.pair_html, args.refresh, args.verbose, args.once, args.universe))
-    elif args.two_leg:
-        asyncio.run(run_two_leg_mode(args.config, args.two_leg, args.pair_html, args.refresh, args.verbose, args.once))
-    else:
-        asyncio.run(run_merged_mode(args.config, args.pair_spec, args.pair_html, args.refresh, args.verbose, args.once, args.pair_any))
-=======
     #让 --watchlist 的优先级高于 --two-leg/--pair-any（避免用户同时传导致歧义）
     if args.watchlist:
         asyncio.run(
@@ -1613,8 +863,9 @@ def main():
         asyncio.run(run_merged_mode(args.config, args.pair_spec, args.pair_html, args.refresh, args.verbose, args.once, args.pair_any))
     else:
         ap.error("请选择 --two-leg 或 --pair-spec/--pair-any 之一")
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
 
 
 if __name__ == "__main__":
     main()
+
+

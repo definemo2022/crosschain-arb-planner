@@ -1,6 +1,6 @@
 # logger_utils.py
 from __future__ import annotations
-<<<<<<< HEAD
+
 import logging
 from typing import Optional
 
@@ -83,7 +83,7 @@ class DebugLogger:
         except Exception:
             sec = 8
         return f"<script>setTimeout(function(){{ location.reload(true); }}, {sec}*1000);</script>"
-=======
+
 import logging, os, sys, threading, traceback, time
 from typing import Optional
 
@@ -254,4 +254,4 @@ def init_debug_logger(app, out_html: Optional[str], verbose: bool) -> SafeDebugL
         except Exception:
             pass
         return NullLogger()
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
+

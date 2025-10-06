@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Watchlist Manager</title>
+    <style>
+        body { max-width: 800px; margin: 0 auto; padding: 20px; }
+        .pair { margin: 10px 0; padding: 10px; border: 1px solid #ddd; }
+        .form-group { margin: 10px 0; }
+        .token-input { display: flex; gap: 10px; }
+        .chain-item { 
+            margin: 10px 0; 
+            padding: 10px; 
+            border: 1px solid #eee;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+        }
+        .modal-content {
+            background: white;
+            margin: 15% auto;
+            padding: 20px;
+            width: 50%;
+            border-radius: 5px;
+        }
+        .error { 
+            color: red; 
+            margin-top: 5px;
+            font-size: 0.9em;
+        }
+        .success {
+            color: green;
+            padding: 10px;
+            margin: 10px 0;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Watchlist Manager</h1>
+    
+    <!-- 添加链管理部分 -->
+    <div id="chain-management" style="margin-bottom: 30px;">
+        <h3>Chain Management</h3>
+        <div id="chains-list"></div>
+        <button onclick="showAddChainForm()">Add New Chain</button>
+    </div>
+    
+    <div id="add-form">
+        <h3>Add New Pair</h3>
+        <div class="form-group">
+            <label>Chain A:</label>
+            <select id="a-chain">
+                <option value="ethereum">Ethereum</option>
+                <option value="arbitrum">Arbitrum</option>
+                <option value="optimism">Optimism</option>
+                <option value="polygon">Polygon</option>
+                <!-- 添加更多支持的链 -->
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Token A:</label>
+            <div class="token-input">
+                <input type="text" id="a-token" placeholder="USDT">
+                <input type="text" id="a-token-address" placeholder="Token Contract Address">
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Chain B:</label>
+            <select id="b-chain">
+                <option value="ethereum">Ethereum</option>
+                <option value="arbitrum">Arbitrum</option>
+                <option value="optimism">Optimism</option>
+                <option value="polygon">Polygon</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Token B:</label>
+            <div class="token-input">
+                <input type="text" id="b-token" placeholder="USDC">
+                <input type="text" id="b-token-address" placeholder="Token Contract Address">
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Base Amount:</label>
+            <input type="number" id="base-amount" placeholder="10000">
+        </div>
+        <button onclick="addPair()">Add Pair</button>
+    </div>
+
+    <h3>Current Pairs</h3>
+    <div id="pairs-list">
+    </div>
+
+    <!-- 添加链的模态框 -->
+    <div id="addChainModal" class="modal">
+        <div class="modal-content">
+            <h3>Add New Chain</h3>
+            <div class="form-group">
+                <label>Chain ID (e.g. ethereum, arbitrum):</label>
+                <input type="text" id="chain-id" placeholder="ethereum">
+            </div>
+            <div class="form-group">
+                <label>Display Name:</label>
+                <input type="text" id="chain-name" placeholder="Ethereum">
+            </div>
+            <div class="form-group">
+                <label>Chain Number:</label>
+                <input type="number" id="chain-number" placeholder="1">
+            </div>
+            <div id="chain-error" class="error"></div>
+            <button onclick="addChain()">Add</button>
+            <button onclick="hideAddChainForm()">Cancel</button>
+        </div>
+    </div>
+
+    <div id="success-message" class="success"></div>
+
+    <script>
+        // 加载链列表
+        function loadChains() {
+            fetch('/api/chains')
+                .then(res => res.json())
+                .then(chains => {
+                    updateChainSelects(chains);
+                    updateChainsList(chains);
+                });
+        }
+
+        function updateChainSelects(chains) {
+            const enabledChains = Object.entries(chains)
+                .filter(([, chain]) => chain.enabled)
+                .map(([id, chain]) => `<option value="${id}">${chain.name}</option>`)
+                .join('');
+            
+            document.getElementById('a-chain').innerHTML = enabledChains;
+            document.getElementById('b-chain').innerHTML = enabledChains;
+        }
+
+        function updateChainsList(chains) {
+            const list = document.getElementById('chains-list');
+            list.innerHTML = Object.entries(chains).map(([id, chain]) => `
+                <div class="chain-item">
+                    <span>${chain.name} (${id}) - Chain ID: ${chain.chainId}</span>
+                    <label>
+                        <input type="checkbox" 
+                               ${chain.enabled ? 'checked' : ''} 
+                               onchange="toggleChain('${id}', this.checked)">
+                        Enabled
+                    </label>
+                </div>
+            `).join('');
+        }
+
+        function toggleChain(chainId, enabled) {
+            fetch(`/api/chains/${chainId}`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled})
+            }).then(() => loadChains());
+        }
+
+        function loadPairs() {
+            fetch('/api/pairs')
+                .then(res => {
+                    if (!res.ok) {
+                        throw new Error(`HTTP error! status: ${res.status}`);
+                    }
+                    return res.json();
+                })
+                .then(pairs => {
+                    const list = document.getElementById('pairs-list');
+                    if (pairs && pairs.length > 0) {
+                        list.innerHTML = pairs.map((pair, index) => `
+                            <div class="pair">
+                                ${pair.A_chain}:${pair.A} (${pair.A_address || 'No address'}) → 
+                                ${pair.B_chain}:${pair.B} (${pair.B_address || 'No address'}) 
+                                (Base: ${pair.base})
+                                <button onclick="deletePair(${index})">Delete</button>
+                            </div>
+                        `).join('');
+                    } else {
+                        list.innerHTML = '<div class="pair">No pairs found</div>';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading pairs:', error);
+                    document.getElementById('pairs-list').innerHTML = 
+                        '<div class="error">Error loading pairs. Please check console for details.</div>';
+                });
+        }
+
+        function showAddChainForm() {
+            document.getElementById('addChainModal').style.display = 'block';
+        }
+
+        function hideAddChainForm() {
+            document.getElementById('addChainModal').style.display = 'none';
+            document.getElementById('chain-error').textContent = '';
+        }
+
+        function showSuccess(message) {
+            const successDiv = document.getElementById('success-message');
+            successDiv.textContent = message;
+            successDiv.style.display = 'block';
+            setTimeout(() => {
+                successDiv.style.display = 'none';
+            }, 3000);
+        }
+
+        function addChain() {
+            const chainId = document.getElementById('chain-id').value.trim();
+            const chainName = document.getElementById('chain-name').value.trim();
+            const chainNumber = parseInt(document.getElementById('chain-number').value);
+            const errorDiv = document.getElementById('chain-error');
+
+            // Validation
+            if (!chainId || !chainName || !chainNumber) {
+                errorDiv.textContent = 'All fields are required';
+                return;
+            }
+
+            if (!/^[a-z0-9-]+$/.test(chainId)) {
+                errorDiv.textContent = 'Chain ID should only contain lowercase letters, numbers and hyphens';
+                return;
+            }
+
+            fetch('/api/chains', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    id: chainId,
+                    name: chainName,
+                    chainId: chainNumber
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    hideAddChainForm();
+                    loadChains();
+                    showSuccess('Chain added successfully');
+                } else {
+                    errorDiv.textContent = data.message || 'Failed to add chain';
+                }
+            });
+        }
+
+        function addPair() {
+            const pair = {
+                A_chain: document.getElementById('a-chain').value,
+                B_chain: document.getElementById('b-chain').value,
+                A: document.getElementById('a-token').value.trim().toUpperCase(),
+                B: document.getElementById('b-token').value.trim().toUpperCase(),
+                A_address: document.getElementById('a-token-address').value.trim(),
+                B_address: document.getElementById('b-token-address').value.trim(),
+                base: parseFloat(document.getElementById('base-amount').value)
+            };
+
+            // Validation
+            let errors = [];
+            if (!pair.A_chain || !pair.B_chain) errors.push('Please select both chains');
+            if (!pair.A || !pair.B) errors.push('Token symbols are required');
+            if (!pair.base || pair.base <= 0) errors.push('Base amount must be greater than 0');
+            if (pair.A_chain === pair.B_chain) errors.push('Source and destination chains must be different');
+            
+            // Address validation (if provided)
+            const addressRegex = /^0x[a-fA-F0-9]{40}$/;
+            if (pair.A_address && !addressRegex.test(pair.A_address)) errors.push('Invalid token A address format');
+            if (pair.B_address && !addressRegex.test(pair.B_address)) errors.push('Invalid token B address format');
+
+            if (errors.length > 0) {
+                alert(errors.join('\n'));
+                return;
+            }
+
+            fetch('/api/pairs', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(pair)
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    loadPairs();
+                    showSuccess('Pair added successfully');
+                    // Clear form
+                    ['a-chain', 'a-token', 'b-chain', 'b-token', 'a-token-address', 'b-token-address', 'base-amount']
+                        .forEach(id => document.getElementById(id).value = '');
+                } else {
+                    alert(data.message || 'Failed to add pair');
+                }
+            });
+        }
+
+        function deletePair(index) {
+            if (confirm('Are you sure you want to delete this pair?')) {
+                fetch(`/api/pairs/${index}`, {
+                    method: 'DELETE'
+                }).then(() => loadPairs());
+            }
+        }
+
+        // Initial load
+        loadChains();
+        loadPairs();
+    </script>
+</body>
+</html>

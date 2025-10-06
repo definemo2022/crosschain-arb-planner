@@ -4,23 +4,16 @@ __pycache__/
 *$py.class
 
 # venv / 工具缓存
-<<<<<<< HEAD
-=======
-.env
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
 .venv/
 env/
 .venv*/
 env*/
-<<<<<<< HEAD
-=======
-tools/
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .cache/
 .ipynb_checkpoints/
+smoke_out/
 
 # 构建产物
 build/
@@ -41,32 +34,20 @@ htmlcov/
 # 你项目生成的输出
 out/
 logs/
-<<<<<<< HEAD
 *.log
-*.html
 
 # 私密/本地配置
 config.json
+chains.json
+watchlist.json
 *.secrets.json
 .env
-=======
-scripts/
-*.log
+
+# Ignore all HTML files
 *.html
-*.txt
 
-# 私密/本地配置
-config.json
-watchlist.json
-chains.json
-*.secrets.json
-
-*.log
-*.html
-__pycache__/
-out/
-
-#本地工具
-watchlist_manager.py
-smoke_suite.py
->>>>>>> cee83a2 (Add watchlist management feature with UI and smoke tests)
+# But keep templates and samples
+!templates/watchlist.html
+!config.example.json
+!chains.exampleample.json
+!watchlist.example.json

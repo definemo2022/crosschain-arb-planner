@@ -1,136 +1,236 @@
 from flask import Flask, render_template, request, jsonify
+from typing import Dict, List
 import json
 import os
-import re
+import logging
 
 app = Flask(__name__)
 WATCHLIST_PATH = "./watchlist.json"
-CHAINS_PATH = "./chains.json"
 
-def load_watchlist():
-    if not os.path.exists(WATCHLIST_PATH):
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+def load_config(config_path: str) -> Dict:
+    """Load config.json and transform it into required format"""
+    logger.debug(f"Loading config from {config_path}")
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            
+        # Transform chains list to dict format
+        chains_dict = {}
+        for chain in config['chains']:
+            chains_dict[chain['name']] = {
+                'name': chain['name'],
+                'chainId': chain['chain_id'],
+                'enabled': True  # Assume all chains are enabled
+            }
+            
+        # Transform assets list to dict format    
+        assets_dict = {}
+        for asset in config['assets']:
+            assets_dict[asset['symbol']] = {
+                'symbol': asset['symbol'],
+                'decimals': asset['decimals'],
+                'address': asset['address']
+            }
+            
+        return {
+            'chains': chains_dict,
+            'assets': assets_dict
+        }
+        
+    except Exception as e:
+        logger.error(f"Error loading config: {e}")
+        raise
+
+def get_chain_tokens(config: Dict, chain: str) -> List[str]:
+    """Get available tokens for a specific chain"""
+    tokens = []
+    for symbol, asset in config['assets'].items():
+        if chain in asset['address']:
+            tokens.append(symbol)
+    return sorted(tokens)
+
+def load_watchlist() -> List[Dict]:
+    """Load current watchlist pairs"""
+    logger.debug(f"Loading watchlist from {WATCHLIST_PATH}")
+    try:
+        if os.path.exists(WATCHLIST_PATH):
+            with open(WATCHLIST_PATH, 'r', encoding='utf-8') as f:
+                pairs = json.load(f)
+            logger.debug(f"Loaded {len(pairs)} pairs from watchlist")
+            return pairs
+        else:
+            logger.debug("Watchlist file not found, returning empty list")
+            return []
+    except Exception as e:
+        logger.error(f"Error loading watchlist: {e}")
         return []
-    with open(WATCHLIST_PATH, "r") as f:
-        return json.load(f)
 
-def save_watchlist(data):
-    with open(WATCHLIST_PATH, "w") as f:
-        json.dump(data, f, indent=2)
-
-def load_chains():
-    if not os.path.exists(CHAINS_PATH):
-        return {}
-    with open(CHAINS_PATH, "r") as f:
-        return json.load(f)
-
-def save_chains(data):
-    with open(CHAINS_PATH, "w") as f:
-        json.dump(data, f, indent=2)
-
-def validate_address(address):
-    if not address:
-        return True  # 允许空地址
-    return bool(re.match(r'^0x[a-fA-F0-9]{40}$', address))
+def render_watchlist_page(config_path: str) -> str:
+    """Generate watchlist management page"""
+    logger.debug("Starting page rendering")
+    config = load_config(config_path)
+    
+    # Get enabled chains
+    enabled_chains = sorted(config['chains'].keys())
+    logger.debug(f"Enabled chains: {enabled_chains}")
+    
+    # Generate chain options HTML
+    chain_options = '\n'.join([
+        f'<option value="{chain}">{chain.upper()}</option>' 
+        for chain in enabled_chains
+    ])
+    
+    # Create token map for each chain
+    token_map = {
+        chain: get_chain_tokens(config, chain) 
+        for chain in enabled_chains
+    }
+    
+    # Load current watchlist
+    current_pairs = load_watchlist()
+    current_pairs_html = '\n'.join([
+        f"""
+        <div class="pair">
+            {pair['A_chain'].upper()}:{pair['A']} → {pair['B_chain'].upper()}:{pair['B']}
+            (Base: {pair['base']})
+            <button onclick="deletePair({i})">Delete</button>
+        </div>
+        """
+        for i, pair in enumerate(current_pairs)
+    ]) if current_pairs else '<div class="pair">No pairs in watchlist</div>'
+    
+    logger.debug(f"Generated HTML for {len(current_pairs) if current_pairs else 0} pairs")
+    
+    # Load and render template
+    try:
+        with open('templates/watchlist.html', 'r', encoding='utf-8') as f:
+            template = f.read()
+            
+        html = template.replace('{{CHAIN_OPTIONS}}', chain_options)
+        html = html.replace('{{TOKEN_MAP}}', json.dumps(token_map))
+        html = html.replace('{{CURRENT_PAIRS}}', current_pairs_html)  # Add this line
+        return html
+        
+    except Exception as e:
+        logger.error(f"Error rendering template: {e}")
+        raise
 
 @app.route('/')
 def index():
-    chains = load_chains()
-    enabled_chains = {k: v for k, v in chains.items() if v.get('enabled', True)}
-    return render_template('watchlist.html', pairs=load_watchlist(), chains=enabled_chains)
+    return render_watchlist_page('./config.json')
 
-@app.route('/api/chains', methods=['GET', 'POST'])  # 添加 GET 方法
-def handle_chains():
-    if request.method == 'GET':
-        return jsonify(load_chains())
-    elif request.method == 'POST':
-        chain = request.json
-        if not all(k in chain for k in ['id', 'name', 'chainId']):
-            return jsonify({"status": "error", "message": "Missing required fields"}), 400
-        
-        chains = load_chains()
-        chains[chain['id']] = {
-            "name": chain['name'],
-            "chainId": chain['chainId'],
-            "enabled": True
-        }
-        save_chains(chains)
-        return jsonify({"status": "success"})
+@app.route('/api/pairs', methods=['GET'])
+def get_pairs():
+    """Get all pairs from watchlist"""
+    pairs = load_watchlist()
+    return jsonify(pairs)
 
-@app.route('/api/chains/<chain_id>', methods=['PUT'])
-def update_chain(chain_id):
-    chains = load_chains()
-    if chain_id not in chains:
-        return jsonify({"status": "error", "message": "Chain not found"}), 404
-    
-    update_data = request.json
-    chains[chain_id].update(update_data)
-    save_chains(chains)
-    return jsonify({"status": "success"})
-
-@app.route('/api/pairs', methods=['GET', 'POST'])  # 添加 GET 方法
-def handle_pairs():
-    if request.method == 'GET':
-        return jsonify(load_watchlist())
-    elif request.method == 'POST':
-        pair = request.json
-        chains = load_chains()
+@app.route('/api/pairs', methods=['POST'])
+def add_pair():
+    """Add new pair to watchlist"""
+    try:
+        # Log request data
+        logger.debug(f"Received POST request data: {request.data}")
         
-        # 验证链是否存在且启用
-        if pair['A_chain'] not in chains or pair['B_chain'] not in chains:
-            return jsonify({"status": "error", "message": "Invalid chain"}), 400
-        if not chains[pair['A_chain']].get('enabled') or not chains[pair['B_chain']].get('enabled'):
-            return jsonify({"status": "error", "message": "Chain is disabled"}), 400
+        # Get current pairs
+        pairs = load_watchlist()
+        logger.debug(f"Current pairs count: {len(pairs)}")
         
-        # 验证必填字段
+        # Get and validate new pair data
+        if not request.is_json:
+            logger.error("Request is not JSON")
+            return jsonify({
+                'status': 'error',
+                'message': 'Content-Type must be application/json'
+            }), 400
+            
+        new_pair = request.json
+        logger.debug(f"Parsed new pair data: {new_pair}")
+        
+        # Validate pair format
         required_fields = ['A_chain', 'B_chain', 'A', 'B', 'base']
-        if not all(field in pair for field in required_fields):
-            return jsonify({"status": "error", "message": "Missing required fields"}), 400
-        
-        # 验证代币地址格式
-        if 'A_address' in pair and not validate_address(pair['A_address']):
-            return jsonify({"status": "error", "message": "Invalid token A address"}), 400
-        if 'B_address' in pair and not validate_address(pair['B_address']):
-            return jsonify({"status": "error", "message": "Invalid token B address"}), 400
-        
-        # 验证base金额
+        missing_fields = [field for field in required_fields if field not in new_pair]
+        if missing_fields:
+            logger.error(f"Missing required fields: {missing_fields}")
+            return jsonify({
+                'status': 'error',
+                'message': f'Missing required fields: {missing_fields}'
+            }), 400
+            
+        # Validate data types
         try:
-            base = float(pair['base'])
-            if base <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return jsonify({"status": "error", "message": "Invalid base amount"}), 400
-        
-        # 确保地址字段存在
-        pair.setdefault('A_address', '')
-        pair.setdefault('B_address', '')
-        
-        watchlist = load_watchlist()
-        watchlist.append(pair)
-        save_watchlist(watchlist)
-        return jsonify({"status": "success"})
+            # Normalize data
+            normalized_pair = {
+                'A_chain': str(new_pair['A_chain']).lower(),
+                'B_chain': str(new_pair['B_chain']).lower(),
+                'A': str(new_pair['A']).upper(),
+                'B': str(new_pair['B']).upper(),
+                'base': float(new_pair['base'])
+            }
+            logger.debug(f"Normalized pair data: {normalized_pair}")
+            
+            # Add new pair
+            pairs.append(normalized_pair)
+            
+            # Save updated watchlist
+            with open(WATCHLIST_PATH, 'w', encoding='utf-8') as f:
+                json.dump(pairs, f, indent=2)
+                logger.debug("Watchlist saved successfully")
+            
+            return jsonify({
+                'status': 'success',
+                'message': 'Pair added successfully'
+            })
+            
+        except ValueError as e:
+            logger.error(f"Data type validation error: {e}")
+            return jsonify({
+                'status': 'error',
+                'message': 'Invalid data types'
+            }), 400
+            
+    except Exception as e:
+        logger.error(f"Error adding pair: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 @app.route('/api/pairs/<int:index>', methods=['DELETE'])
 def delete_pair(index):
-    watchlist = load_watchlist()
-    if 0 <= index < len(watchlist):
-        watchlist.pop(index)
-        save_watchlist(watchlist)
-        return jsonify({"status": "success"})
-    return jsonify({"status": "error", "message": "Invalid index"}), 404
+    """Delete pair from watchlist by index"""
+    try:
+        pairs = load_watchlist()
+        
+        # Check if index is valid
+        if index < 0 or index >= len(pairs):
+            return jsonify({
+                'status': 'error',
+                'message': 'Invalid pair index'
+            }), 400
+            
+        # Remove pair
+        pairs.pop(index)
+        
+        # Save updated watchlist
+        with open(WATCHLIST_PATH, 'w', encoding='utf-8') as f:
+            json.dump(pairs, f, indent=2)
+            
+        return jsonify({
+            'status': 'success',
+            'message': 'Pair deleted successfully'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error deleting pair: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 if __name__ == '__main__':
-    # 确保必要的文件存在
-    if not os.path.exists(CHAINS_PATH):
-        save_chains({
-            "ethereum": {
-                "name": "Ethereum",
-                "chainId": 1,
-                "enabled": True
-            },
-            "arbitrum": {
-                "name": "Arbitrum",
-                "chainId": 42161,
-                "enabled": True
-            }
-        })
     app.run(debug=True)

@@ -1,3 +1,4 @@
+# 1. Imports
 from __future__ import annotations
 import os, json, time, argparse, asyncio, traceback
 from dataclasses import dataclass
@@ -5,78 +6,63 @@ from typing import Dict, Any,  List
 from size_optimizer import OptimizeConfig, optimize_size_async
 from leg_quote import LegQuote, TwoLegResult, LEG_OK, LEG_NO_ADDR, LEG_NO_QUOTE, LEG_ERROR
 from adapters import build_adapters, best_quote_leg
-
 from logger_utils import init_debug_logger, NullLogger
-# 全局兜底，避免未初始化时报 NameError
+
+@dataclass
+class Chain:
+    name: str
+    chain_id: int
+    kyber_slug: str
+
+@dataclass
+class Asset:
+    symbol: str
+    decimals: int
+    address: Dict[str, str]  # chain_name -> addr
+
+@dataclass
+class AppConfig:
+    api: Dict[str, Any]
+    chains: Dict[str, Chain]
+    assets: Dict[str, Asset]
+    settings: Dict[str, Any]
+
+
+# 2. Global variables
 DBG = NullLogger()
 
+# Add a global counter
+QUOTE_COUNTER = 0
+
+# ---- 基础资产：配置与 CLI 覆盖 ----
+CLI_BASE_ASSETS: set[str] = set()
 
 def _init_debug(app, out_html: str, verbose: bool):
     """统一初始化全局 DBG；永远返回一个可用的 logger。"""
     global DBG
     DBG = init_debug_logger(app, out_html, verbose)
-    
 
-
-# =============== 基础设施 ===============
+# 3. Helper functions
 def _ensure_dir(path: str):
+    """Directory creation helper"""
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
 
-async def run_watchlist_mode(
-    app: AppConfig,  # 这里 app 是 str，需要先加载配置
-    watchlist_path: str,
-    out_html: str,
-    refresh: int,
-    once: bool,
-    verbose: bool = True
-) -> None:
-    """运行 watchlist 模式"""
-    _ensure_dir(os.path.dirname(out_html))
-    _write_placeholder_html(out_html, "Watchlist Mode", refresh)
-    
-    global DBG
-    DBG = init_debug_logger("watchlist", out_html, verbose)
-    
-    # 首先加载配置
-    app_config = load_config(app)
-    
-    pairs = _load_watchlist_json(watchlist_path)
-    DBG.info(f"[CHECK] Loaded pairs from watchlist: {len(pairs)}")
-    if not pairs:
-        DBG.error("No valid pairs found in watchlist")
-        return
+def _fmt(x, decimals: int = 6, dash: str = "—") -> str:
+    """把数字格式化为千分位；x 为 None/无效时显示 dash。"""
+    if x is None:
+        return dash
+    try:
+        xf = float(x)
+    except (TypeError, ValueError):
+        # 已是字符串或非数值，直接返回
+        return str(x)
+    return f"{xf:,.{decimals}f}"
 
-    # 使用已有的 Kyber 和 Odos adapters
-    quote_fns = {
-        "kyber": kyber_quote,
-        "odos": odos_quote
-    }
-    adapters = build_adapters(app_config, quote_fns)
-    DBG.info(f"[CHECK] Built adapters: {[a.name for a in adapters]}")
-
-    while True:
-        try:
-            results = await _process_watchlist(app_config, pairs, adapters)
-            DBG.info(f"[CHECK] Processed results count: {len(results) if results else 0}")
-            
-            html = render_watchlist_page("Watchlist Mode", refresh, results)
-            DBG.info("[CHECK] HTML rendered")
-            _write_html(out_html, html)
-            
-            if once:
-                break
-                
-            await asyncio.sleep(refresh)
-            
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            DBG.error(f"Error in watchlist mode: {e}")
-            if once:
-                break
-            await asyncio.sleep(refresh)
+def _now_str() -> str:
+    """Time string helper"""
+    return time.strftime("%Y-%m-%d %H:%M:%S")
 
 def _write_placeholder_html(path: str, title: str, refresh: int):
     _ensure_dir(path)
@@ -103,53 +89,6 @@ def _safe_json_parse(resp_text: str, *, where: str) -> Any:
         snippet = (resp_text or "")[:400].replace("\n", "\\n")
         raise ValueError(f"{where}: non-JSON or empty body. body[:400]={snippet!r}") from e
 
-def _now_str() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
-
-def _fmt(x, decimals: int = 6, dash: str = "—") -> str:
-    """把数字格式化为千分位；x 为 None/无效时显示 dash。"""
-    if x is None:
-        return dash
-    try:
-        xf = float(x)
-    except (TypeError, ValueError):
-        # 已是字符串或非数值，直接返回
-        return str(x)
-    return f"{xf:,.{decimals}f}"
-
-# =============== 配置与模型 ===============
-
-@dataclass
-class Chain:
-    name: str
-    chain_id: int
-    kyber_slug: str
-
-@dataclass
-class Asset:
-    symbol: str
-    decimals: int
-    address: Dict[str, str]  # chain_name -> addr
-
-@dataclass
-class AppConfig:
-    api: Dict[str, Any]
-    chains: Dict[str, Chain]
-    assets: Dict[str, Asset]
-    settings: Dict[str, Any]
-
-def load_config(path: str) -> AppConfig:
-    with open(path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-    chains = {c["name"].lower(): Chain(c["name"].lower(), int(c["chain_id"]), c.get("kyber_slug", c["name"].lower())) for c in raw["chains"]}
-    assets = {a["symbol"].upper(): Asset(a["symbol"].upper(), int(a["decimals"]), {k.lower(): v for k, v in a["address"].items()}) for a in raw["assets"]}
-    return AppConfig(
-        api=raw.get("api", {}),
-        chains=chains,
-        assets=assets,
-        settings=raw.get("settings", {}),
-    )
-
 def _iter_asset_pairs(app: AppConfig, symbols: List[str]):
     """
     产出 (s, b) 的有序资产对，满足：
@@ -165,6 +104,29 @@ def _iter_asset_pairs(app: AppConfig, symbols: List[str]):
                 continue
             yield (s, b)
 
+def _from_wei(amount: int, decimals: int) -> float:
+    return float(amount) / (10 ** decimals)
+
+def _parse_two_leg_spec(pair_spec: str):
+    """
+    解析形如: 'chainA:A>B,chainB:B>A'，返回 (ci_name, a_sym, b_sym, cj_name)
+    """
+    if not pair_spec or "," not in pair_spec:
+        raise ValueError(f"two-leg 需要 'chainA:A>B,chainB:B>A'，当前: {pair_spec!r}")
+    part1, part2 = [x.strip() for x in pair_spec.split(",", 1)]
+    if ":" not in part1 or ">" not in part1 or ":" not in part2 or ">" not in part2:
+        raise ValueError(f"two-leg 需要 'chainA:A>B,chainB:B>A'，当前: {pair_spec!r}")
+
+    ci_name, l1 = [x.strip() for x in part1.split(":", 1)]
+    a1, b1 = [x.strip().upper() for x in l1.split(">", 1)]
+
+    cj_name, l2 = [x.strip() for x in part2.split(":", 1)]
+    b2, a2 = [x.strip().upper() for x in l2.split(">", 1)]
+
+    if a1 != a2 or b1 != b1:
+        # 要求第二腿正好是 B>A
+        raise ValueError(f"two-leg 第二腿应为 {b1}>{a1}，当前: {b2}>{a2}")
+    return ci_name, a1, b1, cj_name
 
 # 从 settings 或 assets 自动得到“资产宇宙”
 def _asset_universe(app, universe_str: str | None = None) -> list[str]:
@@ -185,7 +147,6 @@ def _asset_universe(app, universe_str: str | None = None) -> list[str]:
             symbols = list(app.assets.keys())
     return [s for s in symbols if s in app.assets]
 
-
 # =============== 适配器白名单 ===============
 def _adapter_allows_chain(app: AppConfig, adapter: str, chain: Chain) -> bool:
     """
@@ -204,7 +165,111 @@ def _adapter_allows_chain(app: AppConfig, adapter: str, chain: Chain) -> bool:
             return True
     return False
 
-# =============== 适配器（Kyber / Odos） ===============
+def _parse_base_assets_arg(s: str | None) -> set[str]:
+    if not s:
+        return set()
+    return {x.strip().upper() for x in s.split(",") if x.strip()}
+
+def _base_assets(app: AppConfig) -> set[str]:
+    # CLI 优先；否则读 config.json settings.base_assets
+    if CLI_BASE_ASSETS:
+        return {x for x in CLI_BASE_ASSETS if x in app.assets}
+    cfg = app.settings.get("base_assets", [])
+    if not isinstance(cfg, (list, tuple)):
+        return set()
+    return {str(x).strip().upper() for x in cfg if str(x).strip().upper() in app.assets}
+
+def _skip_pair_by_base(base_set: set[str], a_sym: str, b_sym: str) -> bool:
+    """
+    仅允许一端在基础资产集合、另一端不在（XOR）：
+      - 基础↔基础：跳过
+      - 非基础↔非基础：跳过
+      - 基础↔非基础：允许
+    """
+    a_in = a_sym in base_set
+    b_in = b_sym in base_set
+    # 允许条件是异或（恰好一端在基础集合）
+    allow = (a_in ^ b_in)
+    return not allow  # 返回 True=跳过
+
+async def _process_watchlist(app: AppConfig, pairs: list[dict], adapters) -> List[TwoLegResult]:
+    """处理 watchlist 中的交易对"""
+    results = []
+    DBG.info(f"[CHECK] Processing {len(pairs)} pairs")
+
+    for i, pair in enumerate(pairs):
+        from_chain = pair["from_chain"]
+        to_chain = pair["to_chain"]
+        token_a = pair["a"]
+        token_b = pair["b"]
+        base = pair.get("base")
+
+        DBG.info(f"[CHECK] Processing pair {i+1}: {from_chain}:{token_a} > {to_chain}:{token_b}")
+        try:
+            result = await quote_two_leg_once(
+                app=app,
+                ci=app.chains[from_chain],
+                cj=app.chains[to_chain],
+                a_sym=token_a,
+                b_sym=token_b,
+                base_in_a=base
+            )
+            DBG.info(f"[CHECK] Pair {i+1} result status: {result.status}")
+            results.append(result)
+        except Exception as e:
+            DBG.error(f"Error processing pair {i+1} {pair}: {e}")
+            continue
+
+    DBG.info(f"[CHECK] Finished processing all pairs, got {len(results)} results")
+    return results
+
+# 4. Core functions
+def load_config(path: str) -> AppConfig:
+    """Load configuration"""
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    chains = {c["name"].lower(): Chain(c["name"].lower(), int(c["chain_id"]), c.get("kyber_slug", c["name"].lower())) for c in raw["chains"]}
+    assets = {a["symbol"].upper(): Asset(a["symbol"].upper(), int(a["decimals"]), {k.lower(): v for k, v in a["address"].items()}) for a in raw["assets"]}
+    return AppConfig(
+        api=raw.get("api", {}),
+        chains=chains,
+        assets=assets,
+        settings=raw.get("settings", {}),
+    )
+
+def _load_watchlist_json(path: str) -> list[dict]:
+    """读取 watchlist.json，返回条目列表"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        raise ValueError(f"watchlist file not found: {path}")
+    except Exception as e:
+        raise ValueError(f"bad watchlist json: {e}")
+
+    if not isinstance(data, list):
+        raise ValueError("watchlist must be a JSON array")
+
+    norm_list = []
+    for i, it in enumerate(data):
+        if not isinstance(it, dict):
+            DBG.warn("[watchlist] item %d not a dict, skip", i)
+            continue
+
+        try:
+            pair_spec = {
+                "from_chain": str(it["A_chain"]).lower(),
+                "to_chain": str(it["B_chain"]).lower(),
+                "a": str(it["A"]).upper(),
+                "b": str(it["B"]).upper(),
+                "base": float(it["base"]) if "base" in it else None
+            }
+            norm_list.append(pair_spec)
+        except (KeyError, ValueError) as e:
+            DBG.warn("[watchlist] item %d parse error, skip: %s", i, e)
+            continue
+
+    return norm_list
 
 async def _fetch_http(method: str, url: str, *, headers=None, params=None, json_body=None, timeout=12):
     try:
@@ -219,7 +284,6 @@ async def _fetch_http(method: str, url: str, *, headers=None, params=None, json_
     except Exception as e:
         # 统一吞掉网络异常，返回“不可用”给上层
         return -1, f"__EXC__:{type(e).__name__}:{str(e)[:180]}", {}
-
 
 async def odos_quote(app: AppConfig, chain: Chain, sell_addr: str, buy_addr: str, amount_wei: int) -> Dict[str, Any]:
     base = app.api.get("odos_base", "https://api.odos.xyz").rstrip("/")
@@ -295,11 +359,360 @@ async def kyber_quote(app: AppConfig, chain: Chain, sell_addr: str, buy_addr: st
     body = (text or text2 or "")[:200]
     return {"ok": False, "adapter": "kyber", "err": f"HTTP {code or code2}", "where": f"GET {url1} / {url2}", "body": body}
 
-# =============== 单腿“合并输出”模式（保留旧功能） ===============
+async def quote_basic_leg(app, chain, a_sym, b_sym, base_in: float) -> "LegQuote":
+    """Get basic quote from adapters for a token pair on a single chain.
+    
+    Args:
+        app: Application config
+        chain: Chain configuration 
+        a_sym: Input token symbol
+        b_sym: Output token symbol
+        base_in: Input amount
+        
+    Returns:
+        LegQuote: Quote result from best adapter
+    """
+    # 由主程序把现有函数指针注入适配器，避免循环 import
+    qmap = {
+        "kyber": kyber_quote if "kyber_quote" in globals() else None,
+        "odos":  odos_quote  if "odos_quote"  in globals() else None,
+    }
+    adapters = build_adapters(app, qmap)
+    # 交给聚合器并发对比，拿到标准 LegQuote
+    leg = await best_quote_leg(app, chain, str(a_sym).upper(), str(b_sym).upper(),
+                               float(base_in), adapters)
+    return leg
 
-def _from_wei(amount: int, decimals: int) -> float:
-    return float(amount) / (10 ** decimals)
+async def _quote_two_leg(app, ci, cj, a_sym: str, b_sym: str, base_in_a: float) -> TwoLegResult:
+    """获取两条腿的报价
 
+    Args:
+        app: 应用配置
+        ci: 第一条腿的链
+        cj: 第二条腿的链
+        a_sym: A 代币符号
+        b_sym: B 代币符号
+        base_in_a: 初始 A 代币数量
+
+    Returns:
+        TwoLegResult: 两条腿的报价结果
+    """
+    try:
+        # 第一条腿: ci 上 A->B
+        leg1 = await quote_basic_leg(app, ci, a_sym, b_sym, base_in_a)
+        if leg1.status != LEG_OK:
+            return TwoLegResult(
+                from_chain=ci.name, 
+                to_chain=cj.name,
+                a=a_sym, 
+                b=b_sym,
+                base_in_a=base_in_a,
+                leg1=leg1,
+                leg2=None,
+                final_a=None,
+                pnl=None,
+                pnl_pct=None,
+                status=leg1.status,
+                note=f"Leg1 failed: {leg1.note}"
+            )
+
+        # 第二条腿: cj 上 B->A
+        leg2 = await quote_basic_leg(app, cj, b_sym, a_sym, leg1.out_b)
+        if leg2.status != LEG_OK:
+            return TwoLegResult(
+                from_chain=ci.name,
+                to_chain=cj.name,
+                a=a_sym,
+                b=b_sym,
+                base_in_a=base_in_a,
+                leg1=leg1,
+                leg2=leg2,
+                final_a=None,
+                pnl=None,
+                pnl_pct=None,
+                status=leg2.status,
+                note=f"Leg2 failed: {leg2.note}"
+            )
+
+        # 计算收益
+        final_a = leg2.out_b
+        pnl = final_a - base_in_a
+        pnl_pct = (pnl / base_in_a) * 100 if base_in_a else None
+
+        return TwoLegResult(
+            from_chain=ci.name,
+            to_chain=cj.name,
+            a=a_sym,
+            b=b_sym,
+            base_in_a=base_in_a,
+            leg1=leg1,
+            leg2=leg2,
+            final_a=final_a,
+            pnl=pnl,
+            pnl_pct=pnl_pct,
+            status=LEG_OK,
+            note=""
+        )
+
+    except Exception as e:
+        return TwoLegResult(
+            from_chain=ci.name,
+            to_chain=cj.name,
+            a=a_sym,
+            b=b_sym,
+            base_in_a=base_in_a,
+            leg1=None,
+            leg2=None,
+            final_a=None,
+            pnl=None,
+            pnl_pct=None,
+            status=LEG_ERROR,
+            note=f"Quote error: {str(e)}"
+        )
+
+async def quote_two_leg_once(app, ci, cj, a_sym: str, b_sym: str, base_in_a: float) -> TwoLegResult:
+    """Quote two legs with optimization
+
+    Args:
+        app: 应用配置
+        ci: 第一条腿的链
+        cj: 第二条腿的链
+        a_sym: A 代币符号
+        b_sym: B 代币符号
+        base_in_a: 初始 A 代币数量
+
+    Returns:
+        TwoLegResult: 两条腿的报价结果
+    """
+    try:
+        global QUOTE_COUNTER
+        QUOTE_COUNTER = 0
+        
+        # 获取初始报价
+        result = await _quote_two_leg(app, ci, cj, a_sym, b_sym, base_in_a)
+        QUOTE_COUNTER += 1
+        
+        if result.status == LEG_OK and result.pnl is not None and result.pnl > 0:
+            DBG.info(f"[OPTIMIZE] Found profitable trade, optimizing size. Initial pnl: {result.pnl}")
+            
+            # 定义优化目标函数
+            async def try_size(size: float) -> float:
+                global QUOTE_COUNTER
+                QUOTE_COUNTER += 1
+                r = await _quote_two_leg(app, ci, cj, a_sym, b_sym, size)
+                DBG.info(f"[COUNT] Optimization quote #{QUOTE_COUNTER}: size={size:.2f}, pnl={r.pnl or 0:.2f}")
+                return float(r.pnl or 0)
+            
+            # 仅使用支持的参数
+            opt_result = await optimize_size_async(
+                try_size,
+                OptimizeConfig(
+                    initial_size=base_in_a,
+                    min_size=base_in_a * 0.5,
+                    max_size=base_in_a * 10,
+                    method="brent"
+                )
+            )
+            
+            if opt_result.best_pnl > result.pnl:
+                result = await _quote_two_leg(app, ci, cj, a_sym, b_sym, opt_result.best_size)
+                QUOTE_COUNTER += 1
+                
+        return result
+        
+    except Exception as e:
+        DBG.error(f"Error in quote_two_leg_once: {e}")
+        return TwoLegResult(
+            from_chain=ci.name,
+            to_chain=cj.name,
+            a=a_sym,
+            b=b_sym,
+            base_in_a=base_in_a,
+            leg1=None,
+            leg2=None,
+            final_a=None,
+            pnl=None,
+            pnl_pct=None,
+            status=LEG_ERROR,
+            note=f"Quote error: {str(e)}"
+        )
+
+# 5. Mode functions
+async def run_one_leg_mode(app: AppConfig, pair_spec: str, out_html: str, refresh: int, verbose: bool, once: bool, pair_any: str):
+    """运行单腿报价模式：在单一链上查询代币对的报价"""
+    _ensure_dir(os.path.dirname(out_html))
+    _write_placeholder_html(out_html, "Single Leg Mode", refresh)
+    
+    global DBG
+    DBG = init_debug_logger("single-leg", out_html, verbose)
+    
+    while True:
+        try:
+            # 获取代币对信息
+            if pair_any:
+                if ">" not in pair_any:
+                    raise ValueError(f"pair-any 格式应为 'A>B'，当前: {pair_any}")
+                a_sym, b_sym = [x.strip().upper() for x in pair_any.split(">")]
+                chain_name = "ethereum"  # 默认在 ethereum 链上查询
+            else:
+                if ":" not in pair_spec or ">" not in pair_spec:
+                    raise ValueError(f"pair-spec 格式应为 'chain:A>B'，当前: {pair_spec}")
+                chain_name, pair = pair_spec.split(":", 1)
+                a_sym, b_sym = [x.strip().upper() for x in pair.split(">")]
+            
+            # 获取链配置
+            chain = app.chains[chain_name.lower()]
+            
+            # 获取报价
+            leg = await quote_basic_leg(app, chain, a_sym, b_sym, 1000)  # 使用1000作为基础数量
+            
+            # 渲染结果
+            html = render_legs_page(
+                title=f"Single Leg Quote: {chain_name}:{a_sym}>{b_sym}",
+                refresh=refresh,
+                legs=[leg]
+            )
+            _write_html(out_html, html)
+            
+            if once:
+                break
+                
+            await asyncio.sleep(refresh)
+            
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            DBG.error(f"Error in single leg mode: {e}")
+            if once:
+                break
+            await asyncio.sleep(refresh)
+
+async def run_two_leg_mode(app: AppConfig, pair_spec: str, out_html: str, refresh: int, verbose: bool, once: bool):
+    """运行两腿套利模式，分析跨链套利机会"""
+    _ensure_dir(os.path.dirname(out_html))
+    _write_placeholder_html(out_html, "Two-Leg Mode", refresh)
+    
+    global DBG
+    DBG = init_debug_logger("two-leg", out_html, verbose)
+    DBG.info("[CHECK] Starting two-leg mode")
+    
+    while True:
+        try:
+            # 解析交易对规格
+            try:
+                ci_name, a_sym, b_sym, cj_name = _parse_two_leg_spec(pair_spec)
+                DBG.info(f"[CHECK] Parsed pair spec: {ci_name}:{a_sym}>{b_sym} -> {cj_name}:{b_sym}>{a_sym}")
+            except ValueError as e:
+                DBG.error(f"Invalid pair spec: {e}")
+                break
+
+            # 获取链配置
+            ci = app.chains[ci_name.lower()]
+            cj = app.chains[cj_name.lower()]
+            DBG.info(f"[CHECK] Got chain configs: {ci.name} and {cj.name}")
+            
+            # 使用初始数量查询报价（默认1000）
+            base_in_a = 1000.0
+            DBG.info(f"[CHECK] Quoting {ci_name}:{a_sym}>{b_sym} -> {cj_name}:{b_sym}>{a_sym} with base {base_in_a}")
+            
+            # 获取报价并优化数量
+            result = await quote_two_leg_once(
+                app=app,
+                ci=ci,
+                cj=cj,
+                a_sym=a_sym,
+                b_sym=b_sym,
+                base_in_a=base_in_a
+            )
+            DBG.info(f"[CHECK] Got quote result with status: {result.status}")
+            
+            # 渲染结果页面
+            if result.leg1 and result.leg2:
+                DBG.info("[CHECK] Both legs available, rendering page")
+                html = render_legs_page(
+                    title=f"Two-Leg Arbitrage: {ci_name}:{a_sym}>{b_sym} -> {cj_name}:{b_sym}>{a_sym}",
+                    refresh=refresh,
+                    legs=[result.leg1, result.leg2]
+                )
+                DBG.info("[CHECK] Page rendered, writing to file")
+                _write_html(out_html, html)
+                
+                # 显示套利结果
+                if result.status == LEG_OK:
+                    if result.pnl and result.pnl > 0:
+                        DBG.info(f"Found arbitrage opportunity! PnL: {_fmt(result.pnl)} {a_sym} ({_fmt(result.pnl_pct, 2)}%)")
+                    else:
+                        DBG.info(f"No arbitrage opportunity. PnL: {_fmt(result.pnl)} {a_sym}")
+                else:
+                    DBG.error(f"Quote failed: {result.status} - {result.note}")
+            else:
+                DBG.error("[CHECK] Missing legs in result")
+            
+            if once:
+                break
+                
+            await asyncio.sleep(refresh)
+            
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            DBG.error(f"Error in two-leg mode: {e}\n{traceback.format_exc()}")
+            if once:
+                break
+            await asyncio.sleep(refresh)
+
+async def run_watchlist_mode(
+    app: AppConfig,    # Changed from str to AppConfig
+    watchlist_path: str,
+    out_html: str,
+    refresh: int,
+    once: bool,
+    verbose: bool = True
+) -> None:
+    """运行 watchlist 模式"""
+    _ensure_dir(os.path.dirname(out_html))
+    _write_placeholder_html(out_html, "Watchlist Mode", refresh)
+    
+    global DBG
+    DBG = init_debug_logger("watchlist", out_html, verbose)
+    
+    pairs = _load_watchlist_json(watchlist_path)
+    DBG.info(f"[CHECK] Loaded pairs from watchlist: {len(pairs)}")
+    if not pairs:
+        DBG.error("No valid pairs found in watchlist")
+        return
+
+    # 使用已有的 Kyber 和 Odos adapters
+    quote_fns = {
+        "kyber": kyber_quote,
+        "odos": odos_quote
+    }
+    adapters = build_adapters(app, quote_fns)
+    DBG.info(f"[CHECK] Built adapters: {[a.name for a in adapters]}")
+
+    while True:
+        try:
+            results = await _process_watchlist(app, pairs, adapters)
+            DBG.info(f"[CHECK] Processed results count: {len(results) if results else 0}")
+            
+            html = render_watchlist_page("Watchlist Mode", results, refresh, len(pairs), len(results))
+            DBG.info("[CHECK] HTML rendered")
+            _write_html(out_html, html)
+            
+            if once:
+                break
+                
+            await asyncio.sleep(refresh)
+            
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            DBG.error(f"Error in watchlist mode: {e}")
+            if once:
+                break
+            await asyncio.sleep(refresh)
+
+# 5.1 render functions
 def _render_page(title: str, refresh: int, rows: List[dict], debug_html: str = "", head_extra: str = "") -> str:
     esc = lambda s: (s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
     table_rows = []
@@ -370,453 +783,73 @@ def render_legs_page(title: str, refresh: int, legs: list[LegQuote], head_extra:
         f"<body><h2>{title}</h2><div class='sub'>Auto-refresh: {int(refresh)}s</div>{table}</body></html>"
     )
 
-# 用标准适配器聚合，返回 LegQuote；
-async def quote_one_leg_leg(app, chain, a_sym, b_sym, base_in: float) -> "LegQuote":
-    # 由主程序把现有函数指针注入适配器，避免循环 import
-    qmap = {
-        "kyber": kyber_quote if "kyber_quote" in globals() else None,
-        "odos":  odos_quote  if "odos_quote"  in globals() else None,
-    }
-    adapters = build_adapters(app, qmap)
-    # 交给聚合器并发对比，拿到标准 LegQuote
-    leg = await best_quote_leg(app, chain, str(a_sym).upper(), str(b_sym).upper(),
-                               float(base_in), adapters)
-    return leg
-
-
-# —— 新增：双腿解析小工具 ——
-def _parse_two_leg_spec(pair_spec: str):
+def render_watchlist_page(title: str, results: List[TwoLegResult], refresh: int, total_pairs: int, processed_pairs: int) -> str:
+    """渲染监控结果页面"""
+    progress = f"Processing: {processed_pairs}/{total_pairs} pairs"
+    
+    css = """
+    body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft YaHei';
+        margin:20px;color:#0f172a}
+    .t{border-collapse:collapse;width:100%} .t th,.t td{border:1px solid #e2e8f0;padding:8px}
+    .t th{text-align:left;background:#f8fafc}
+    .profit{color:#059669} .loss{color:#dc2626}
     """
-    解析形如: 'chainA:A>B,chainB:B>A'，返回 (ci_name, a_sym, b_sym, cj_name)
+    
+    rows = []
+    for r in results:
+        pnl_class = "profit" if r.pnl and r.pnl > 0 else "loss"
+        rows.append(f"""
+            <tr>
+                <td>{r.from_chain}→{r.to_chain}</td>
+                <td>{r.a}→{r.b}→{r.a}</td>
+                <td>{_fmt(r.base_in_a)}</td>
+                <td class="{pnl_class}">{_fmt(r.pnl)}</td>
+                <td class="{pnl_class}">{_fmt(r.pnl_pct, 2)}%</td>
+                <td>{r.status}</td>
+                <td>{r.note}</td>
+            </tr>
+        """)
+
+    table = f"""
+    <table class="t">
+        <thead>
+            <tr>
+                <th>Chains</th>
+                <th>Path</th>
+                <th>Base</th>
+                <th>PnL</th>
+                <th>PnL%</th>
+                <th>Status</th>
+                <th>Note</th>
+            </tr>
+        </thead>
+        <tbody>
+            {''.join(rows)}
+        </tbody>
+    </table>
     """
-    if not pair_spec or "," not in pair_spec:
-        raise ValueError(f"two-leg 需要 'chainA:A>B,chainB:B>A'，当前: {pair_spec!r}")
-    part1, part2 = [x.strip() for x in pair_spec.split(",", 1)]
-    if ":" not in part1 or ">" not in part1 or ":" not in part2 or ">" not in part2:
-        raise ValueError(f"two-leg 需要 'chainA:A>B,chainB:B>A'，当前: {pair_spec!r}")
 
-    ci_name, l1 = [x.strip() for x in part1.split(":", 1)]
-    a1, b1 = [x.strip().upper() for x in l1.split(">", 1)]
-
-    cj_name, l2 = [x.strip() for x in part2.split(":", 1)]
-    b2, a2 = [x.strip().upper() for x in l2.split(">", 1)]
-
-    if a1 != a2 or b1 != b2:
-        # 要求第二腿正好是 B>A
-        raise ValueError(f"two-leg 第二腿应为 {b1}>{a1}，当前: {b2}>{a2}")
-    return ci_name, a1, b1, cj_name
-
-#—— 新增：双腿一次计算 ——
-import asyncio
-
-async def quote_two_leg_once(app, ci, cj, a_sym: str, b_sym: str, base_in_a: float) -> TwoLegResult:
+    return f"""<!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="refresh" content="{refresh}">
+        <title>{title}</title>
+        <style>{css}</style>
+    </head>
+    <body>
+        <h2>{title}</h2>
+        <div style="color:#64748b;margin:6px 0">
+            {progress} · Auto refresh {refresh}s · {_now_str()}
+        </div>
+        {table}
+    </body>
+    </html>
     """
-    计算两腿：ci 上 A->B，然后 cj 上 B->A。
-    成功则 status='ok'，否则返回 no-addr / no-quote / error。
-    （不再使用 Decimal，全部用 float 转换）
-    """
-    # Leg1
-    leg1 = await quote_one_leg_leg(app, ci, a_sym, b_sym, base_in_a)
-    if leg1.status != LEG_OK or not isinstance(leg1.out_wei, int) or leg1.out_wei <= 0:
-        return TwoLegResult(
-            from_chain=ci.name, to_chain=cj.name, a=a_sym, b=b_sym,
-            base_in_a=base_in_a, leg1=leg1, leg2=None,
-            final_a=None, pnl=None, pnl_pct=None,
-            status=leg1.status if leg1.status != LEG_OK else LEG_NO_QUOTE,
-            note=leg1.note or "leg1 failed"
-        )
 
-    # 将 leg1 的 B 输出（wei）转成人类单位，作为第二腿的 base_in
-    try:
-        B = app.assets[b_sym]
-        dB = int(getattr(B, "decimals", 18))
-        base_in_b = leg1.out_wei / float(10 ** dB)
-    except Exception as e:
-        return TwoLegResult(
-            from_chain=ci.name, to_chain=cj.name, a=a_sym, b=b_sym,
-            base_in_a=base_in_a, leg1=leg1, leg2=None,
-            final_a=None, pnl=None, pnl_pct=None,
-            status=LEG_ERROR, note=f"bad B meta: {e}"
-        )
-
-    # Leg2：加 soft-timeout 防卡
-    soft = float(app.settings.get("soft_timeout_sec", 5))
-    try:
-        leg2 = await asyncio.wait_for(
-            quote_one_leg_leg(app, cj, b_sym, a_sym, base_in_b),
-            timeout=soft
-        )
-    except asyncio.TimeoutError:
-        leg2 = LegQuote(
-            chain=cj.name, a=b_sym, b=a_sym, base_in=base_in_b,
-            in_wei=None, out_b=None, out_wei=0, adapter="-",
-            status=LEG_NO_QUOTE, note=f"soft-timeout {soft}s"
-        )
-    except Exception as e:
-        leg2 = LegQuote(
-            chain=cj.name, a=b_sym, b=a_sym, base_in=base_in_b,
-            in_wei=None, out_b=None, out_wei=0, adapter="-",
-            status=LEG_ERROR, note=str(e)
-        )
-
-    # 计算最终 A、PnL（float）
-    try:
-        A = app.assets[a_sym]
-        dA = int(getattr(A, "decimals", 18))
-        final_a = (leg2.out_wei / float(10 ** dA)) if leg2 and leg2.out_wei else None
-        pnl = (final_a - base_in_a) if (final_a is not None) else None
-        pnl_pct = (pnl / base_in_a * 100.0) if (pnl is not None and base_in_a) else None
-        status = LEG_OK if (leg2.status == LEG_OK and final_a is not None) else leg2.status
-        note = "" if status == LEG_OK else (leg2.note or "")
-        return TwoLegResult(
-            from_chain=ci.name, to_chain=cj.name, a=a_sym, b=b_sym,
-            base_in_a=base_in_a, leg1=leg1, leg2=leg2,
-            final_a=final_a, pnl=pnl, pnl_pct=pnl_pct,
-            status=status, note=note
-        )
-    except Exception as e:
-        return TwoLegResult(
-            from_chain=ci.name, to_chain=cj.name, a=a_sym, b=b_sym,
-            base_in_a=base_in_a, leg1=leg1, leg2=leg2,
-            final_a=None, pnl=None, pnl_pct=None,
-            status=LEG_ERROR, note=str(e)
-        )
-
-
-# === Single-leg merged mode (render with LegQuote) ===========================
-def _derive_pair_any(pair_any: str | None, pair_spec: str | None) -> str:
-    """优先用 --pair-any；否则从 --pair-spec 提取第一条腿的 A>B（忽略链前缀与第二腿）。"""
-    if pair_any and ">" in pair_any:
-        return pair_any.strip()
-    if pair_spec:
-        first = pair_spec.split(",")[0].strip()        # 取第一条腿
-        if ":" in first:                               # 去掉可选链前缀 chain:
-            first = first.split(":", 1)[1].strip()
-        if ">" in first:
-            return first
-    raise ValueError(f"需要提供 --pair-any A>B，或 --pair-spec chain:A>B（当前 pair_any={pair_any!r}, pair_spec={pair_spec!r}）")
-
-async def run_merged_mode(cfg_path: str,
-                          pair_spec: str,     # <- 兼容 main 的第2个参数（可为空字符串）
-                          out_html: str,
-                          refresh: int,
-                          verbose: bool,
-                          once: bool,
-                          pair_any: str):     # <- main 的第7个参数
-    """
-    单腿模式：对 (A>B) 在所有可用链上做一次最优单腿报价，渲染为统一表格。
-    依赖：load_config, _init_debug, quote_one_leg_leg, render_legs_page, _write_html
-    """
-    app = load_config(cfg_path)
-    _init_debug(app, out_html, verbose)
-
-    # 解析资产对 A>B
-    pair = _derive_pair_any(pair_any, pair_spec)
-    a_sym, b_sym = [x.strip().upper() for x in pair.split(">", 1)]
-
-    base_in = float(app.settings.get("default_base_in", 10_000))
-    title_base = f"{a_sym}>{b_sym}  (base={base_in:g})"
-
-    loop_idx = 0
-    while True:
-        loop_idx += 1
-        t0 = time.time()
-
-        legs: list[LegQuote] = []
-        for ci_name, ci in app.chains.items():
-            try:
-                leg = await quote_one_leg_leg(app, ci, a_sym, b_sym, base_in)
-            except Exception as e:
-                leg = LegQuote(
-                    chain=getattr(ci, "name", ci_name),
-                    a=a_sym, b=b_sym, base_in=base_in,
-                    in_wei=None, out_b=None, out_wei=0,
-                    adapter="-", status=LEG_ERROR, note=str(e)
-                )
-            legs.append(leg)
-
-        dur_ms = int((time.time() - t0) * 1000)
-        DBG.info("[merged] loop=%d legs=%d dur=%dms", loop_idx, len(legs), dur_ms)
-
-        title = f"Single-leg: {title_base}"
-        head_extra = DBG.js_auto_refresh(refresh) if hasattr(DBG, "js_auto_refresh") else ""
-        html = render_legs_page(title, refresh, legs, head_extra=head_extra)
-
-        try:
-            _write_html(out_html, html)
-        except Exception as e:
-            DBG.error("write html failed: %s", e)
-
-        try:
-            DBG.info("[merged] %s", {
-                "mode": "merged",
-                "loop": loop_idx,
-                "legs_total": len(legs),
-                "duration_ms": dur_ms,
-                "now": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "html_path": out_html,
-            })
-        except Exception:
-            pass
-
-        if once:
-            break
-        try:
-            await asyncio.sleep(int(refresh))
-        except asyncio.CancelledError:
-            break
-
-#兼容twoleg mode 和watchlist mode
-def render_watchlist_page(title: str, refresh: int, rows, head_extra: str = "") -> str:
-    css = (
-        "body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft YaHei';"
-        "margin:20px;color:#0f172a}"
-        ".t{border-collapse:collapse;width:100%}.t th,.t td{border:1px solid #e2e8f0;padding:8px}"
-        ".t th{text-align:left;background:#f8fafc}"
-        "h2{margin:0 0 12px 0}.sub{color:#475569;margin:0 0 16px 0}"
-        ".ok{color:#059669}.no-quote{color:#b45309}.no-addr{color:#b45309}.error{color:#b91c1c}.num{text-align:right}"
-    )
-    head_auto = head_extra or (DBG.js_auto_refresh(refresh) if hasattr(DBG, "js_auto_refresh") else "")
-
-    body_rows = "".join([r.as_html_row() for r in (rows or [])])
-    table = (
-        "<table class='t'>"
-        "<thead><tr>"
-        "<th>From</th><th>To</th><th>A</th><th>B</th><th>Base(A)</th>"
-        "<th>Leg1 Adapter</th><th>A→B Out</th>"
-        "<th>Leg2 Adapter</th><th>Final A</th><th>PnL(A)</th><th>PnL%</th>"
-        "<th>Best Size (A)</th><th>Best PnL (A)</th><th>Best PnL%</th>"
-        "<th>Status</th><th>Note</th>"
-        "</tr></thead>"
-        f"<tbody>{body_rows}</tbody></table>"
-    )
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"{head_auto}"
-        f"<title>{title}</title><style>{css}</style></head>"
-        f"<body><h2>{title}</h2><div class='sub'>Auto-refresh: {int(refresh)}s</div>{table}</body></html>"
-    )
-
-async def run_two_leg_mode(cfg_path: str,
-                           pair_spec: str,
-                           out_html: str,
-                           refresh: int,
-                           verbose: bool,
-                           once: bool):
-    """
-    两腿模式：解析 'chainA:A>B,chainB:B>A'，计算一次两腿并渲染。
-    依赖：load_config, _init_debug, _write_html, quote_two_leg_once, render_two_leg_page
-    """
-    app = load_config(cfg_path)
-    _init_debug(app, out_html, verbose)
-
-    ci_name, a_sym, b_sym, cj_name = _parse_two_leg_spec(pair_spec)
-    try:
-        ci = app.chains[ci_name]; cj = app.chains[cj_name]
-    except KeyError as e:
-        raise ValueError(f"未知链: {e}")
-
-    base_in_a = float(app.settings.get("default_base_in", 10_000))
-    title_base = f"{ci.name}:{a_sym}>{b_sym}, {cj.name}:{b_sym}>{a_sym} (base={base_in_a:g})"
-
-    loop_idx = 0
-    while True:
-        loop_idx += 1
-        t0 = time.time()
-
-        row = await quote_two_leg_once(app, ci, cj, a_sym, b_sym, base_in_a)
-        dur_ms = int((time.time() - t0) * 1000)
-        DBG.info("[two-leg] loop=%d dur=%dms status=%s pnl=%s", loop_idx, dur_ms, row.status, row.pnl)
-
-        html = render_watchlist_page(f"Two-leg: {title_base}", refresh, [row],
-                                   head_extra=(DBG.js_auto_refresh(refresh) if hasattr(DBG, "js_auto_refresh") else ""))
-
-        try:
-            _write_html(out_html, html)
-        except Exception as e:
-            DBG.error("write html failed: %s", e)
-
-        if once:
-            break
-        try:
-            await asyncio.sleep(int(refresh))
-        except asyncio.CancelledError:
-            break
-
-def _load_watchlist_json(path: str) -> list[dict]:
-    """读取 watchlist.json，返回条目列表。适配新的字段格式。"""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        raise ValueError(f"watchlist file not found: {path}")
-    except Exception as e:
-        raise ValueError(f"bad watchlist json: {e}")
-
-    if not isinstance(data, list):
-        raise ValueError("watchlist must be a JSON array")
-
-    norm_list = []
-    for i, it in enumerate(data):
-        if not isinstance(it, dict):
-            DBG.warn("[watchlist] item %d not a dict, skip", i)
-            continue
-
-        # 适配新的字段名称
-        try:
-            pair_spec = {
-                "from_chain": str(it["A_chain"]).lower(),
-                "to_chain": str(it["B_chain"]).lower(),
-                "a": str(it["A"]).upper(),
-                "b": str(it["B"]).upper(),
-                "base": float(it["base"]) if "base" in it else None,
-                "A_address": str(it["A_address"]) if "A_address" in it else None,
-                "B_address": str(it["B_address"]) if "B_address" in it else None
-            }
-            norm_list.append(pair_spec)
-        except (KeyError, ValueError) as e:
-            DBG.warn("[watchlist] item %d parse error, skip: %s", i, e)
-            continue
-
-    return norm_list
-
-async def _process_watchlist(app: AppConfig, pairs: list[dict], adapters) -> List[TwoLegResult]:
-    """处理 watchlist 中的交易对"""
-    results = []
-    DBG.info(f"[CHECK] Processing {len(pairs)} pairs")
-
-    for i, pair in enumerate(pairs):
-        from_chain = pair["from_chain"]
-        to_chain = pair["to_chain"]
-        token_a = pair["a"]
-        token_b = pair["b"]
-        base = pair.get("base")
-        a_address = pair.get("A_address")
-        b_address = pair.get("B_address")
-
-        DBG.info(f"[CHECK] Processing pair {i+1}: {from_chain}:{token_a} > {to_chain}:{token_b}")
-        try:
-            result = await analyze_pair(
-                app=app,
-                adapters=adapters,
-                from_chain=from_chain,
-                to_chain=to_chain,
-                a=token_a,
-                b=token_b,
-                base_in_a=base,
-                a_address=a_address,
-                b_address=b_address
-            )
-            DBG.info(f"[CHECK] Pair {i+1} result status: {result.status}")
-            results.append(result)
-        except Exception as e:
-            DBG.error(f"Error processing pair {i+1} {pair}: {e}")
-            continue
-
-    DBG.info(f"[CHECK] Finished processing all pairs, got {len(results)} results")
-    return results
-
-async def analyze_pair(
-    app: AppConfig,
-    adapters,
-    from_chain: str,
-    to_chain: str,
-    a: str,
-    b: str,
-    base_in_a: float,
-    a_address: str = None,
-    b_address: str = None
-) -> TwoLegResult:
-    """分析单个交易对，返回两腿交易结果"""
-    try:
-        # 获取链的配置
-        DBG.info(f"[DEBUG] Getting chain configs for {from_chain} and {to_chain}")
-        ci = app.chains[from_chain]
-        cj = app.chains[to_chain]
-        
-        # 记录关键参数
-        DBG.info(f"[DEBUG] Quote params: {a}>{b} base_in={base_in_a}")
-        
-        # 调用已有的 quote_two_leg_once 函数
-        result = await quote_two_leg_once(
-            app=app,
-            ci=ci,
-            cj=cj,
-            a_sym=a,
-            b_sym=b,
-            base_in_a=base_in_a
-        )
-        
-        # 记录结果状态
-        DBG.info(f"[DEBUG] Quote result: status={result.status}, pnl={result.pnl}, note={result.note}")
-        return result
-        
-    except KeyError as e:
-        error_msg = f"Chain not found: {str(e)}"
-        DBG.error(error_msg)
-        return TwoLegResult(
-            from_chain=from_chain,
-            to_chain=to_chain,
-            a=a,
-            b=b,
-            base_in_a=base_in_a,
-            leg1=None,
-            leg2=None,
-            final_a=None,
-            pnl=None,
-            pnl_pct=None,
-            status=LEG_ERROR,
-            note=error_msg
-        )
-    except Exception as e:
-        error_msg = f"Analysis error: {str(e)}\n{traceback.format_exc()}"
-        DBG.error(error_msg)
-        return TwoLegResult(
-            from_chain=from_chain,
-            to_chain=to_chain,
-            a=a,
-            b=b,
-            base_in_a=base_in_a,
-            leg1=None,
-            leg2=None,
-            final_a=None,
-            pnl=None,
-            pnl_pct=None,
-            status=LEG_ERROR,
-            note=error_msg
-        )
-# =============== CLI ===============
-# ---- 基础资产：配置与 CLI 覆盖 ----
-CLI_BASE_ASSETS: set[str] = set()
-
-def _parse_base_assets_arg(s: str | None) -> set[str]:
-    if not s:
-        return set()
-    return {x.strip().upper() for x in s.split(",") if x.strip()}
-
-def _base_assets(app: AppConfig) -> set[str]:
-    # CLI 优先；否则读 config.json settings.base_assets
-    if CLI_BASE_ASSETS:
-        return {x for x in CLI_BASE_ASSETS if x in app.assets}
-    cfg = app.settings.get("base_assets", [])
-    if not isinstance(cfg, (list, tuple)):
-        return set()
-    return {str(x).strip().upper() for x in cfg if str(x).strip().upper() in app.assets}
-
-def _skip_pair_by_base(base_set: set[str], a_sym: str, b_sym: str) -> bool:
-    """
-    仅允许一端在基础资产集合、另一端不在（XOR）：
-      - 基础↔基础：跳过
-      - 非基础↔非基础：跳过
-      - 基础↔非基础：允许
-    """
-    a_in = a_sym in base_set
-    b_in = b_sym in base_set
-    # 允许条件是异或（恰好一端在基础集合）
-    allow = (a_in ^ b_in)
-    return not allow  # 返回 True=跳过
-
+# 6. Main function
 def main():
+    """Main entry point"""
     ap = argparse.ArgumentParser()
     ap.add_argument("--debug", action="store_true", help="开启调试面板并写日志（需要 logger_utils.py）")
     ap.add_argument("--log-file", required=False, help="日志文件路径；缺省为与HTML同名的 .log")
@@ -837,35 +870,56 @@ def main():
     ap.add_argument("--pair-any", required=False,help='只写资产对，自动遍历所有共同链，形如 "USDE>USDC"（大小写不敏感）')
     args = ap.parse_args()
 
+    # Load config once at the start
+    app_config = load_config(args.config)
+
     # ★ 保存 CLI 覆盖集合
     global CLI_BASE_ASSETS
     CLI_BASE_ASSETS = _parse_base_assets_arg(args.base_assets)
 
-    #让 --watchlist 的优先级高于 --two-leg/--pair-any（避免用户同时传导致歧义）
+    # 让 --watchlist 的优先级高于 --two-leg/--pair-any
     if args.watchlist:
         asyncio.run(
             run_watchlist_mode(
-                args.config,
+                app_config,  # Pass AppConfig instead of config path
                 args.watchlist,
                 args.pair_html,
                 args.refresh,
-                args.verbose,
                 args.once,
+                args.verbose
             )
         )
         return
 
     if args.two_leg:
-    # 两腿（watchlist 之前就是手动 pair-spec；我们后面会逐步改成 watchlist 驱动）
-        asyncio.run(run_two_leg_mode(args.config, args.pair_spec, args.pair_html, args.refresh, args.verbose, args.once))
+        # 两腿模式
+        asyncio.run(run_two_leg_mode(
+            app_config,  # Pass AppConfig
+            args.pair_spec,
+            args.pair_html,
+            args.refresh,
+            args.verbose,
+            args.once
+        ))
     elif args.pair_spec or args.pair_any:
-        # 单腿：指定资产对，在所有可用链对比最优单腿兑换
-        asyncio.run(run_merged_mode(args.config, args.pair_spec, args.pair_html, args.refresh, args.verbose, args.once, args.pair_any))
+        # 单腿模式
+        asyncio.run(run_one_leg_mode(
+            app_config,  # Pass AppConfig
+            args.pair_spec,
+            args.pair_html,
+            args.refresh,
+            args.verbose,
+            args.once,
+            args.pair_any
+        ))
     else:
         ap.error("请选择 --two-leg 或 --pair-spec/--pair-any 之一")
 
-
+# 7. Entry point
 if __name__ == "__main__":
     main()
+
+
+
 
 

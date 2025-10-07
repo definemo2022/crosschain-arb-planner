@@ -34,6 +34,7 @@ DBG = NullLogger()
 
 # Add a global counter
 QUOTE_COUNTER = 0
+QUOTE_START_TIME = 0  # Add this
 
 # ---- 基础资产：配置与 CLI 覆盖 ----
 CLI_BASE_ASSETS: set[str] = set()
@@ -525,8 +526,9 @@ async def quote_two_leg_once(app, ci, cj, a_sym: str, b_sym: str, base_in_a: flo
         TwoLegResult: 两条腿的报价结果
     """
     try:
-        global QUOTE_COUNTER
+        global QUOTE_COUNTER, QUOTE_START_TIME
         QUOTE_COUNTER = 0
+        QUOTE_START_TIME = time.time()  # Record start time
         
         # 获取初始报价
         result = await _quote_two_leg(app, ci, cj, a_sym, b_sym, base_in_a)
@@ -550,7 +552,7 @@ async def quote_two_leg_once(app, ci, cj, a_sym: str, b_sym: str, base_in_a: flo
                     initial_size=base_in_a,
                     min_size=base_in_a * 0.5,
                     max_size=base_in_a * 10,
-                    method="brent"
+                    method="double_then_golden"
                 )
             )
             
@@ -558,9 +560,13 @@ async def quote_two_leg_once(app, ci, cj, a_sym: str, b_sym: str, base_in_a: flo
                 result = await _quote_two_leg(app, ci, cj, a_sym, b_sym, opt_result.best_size)
                 QUOTE_COUNTER += 1
                 
+        # Add timing info to note
+        elapsed = time.time() - QUOTE_START_TIME
+        result.note = f"{result.note} (Quotes: {QUOTE_COUNTER}, Time: {elapsed:.2f}s)"
         return result
         
     except Exception as e:
+        elapsed = time.time() - QUOTE_START_TIME
         DBG.error(f"Error in quote_two_leg_once: {e}")
         return TwoLegResult(
             from_chain=ci.name,
@@ -574,7 +580,7 @@ async def quote_two_leg_once(app, ci, cj, a_sym: str, b_sym: str, base_in_a: flo
             pnl=None,
             pnl_pct=None,
             status=LEG_ERROR,
-            note=f"Quote error: {str(e)}"
+            note=f"Quote error: {str(e)} (Quotes: {QUOTE_COUNTER}, Time: {elapsed:.2f}s)"
         )
 
 # 5. Mode functions

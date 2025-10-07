@@ -48,7 +48,7 @@ class OptimizeConfig:
     prefer_integer_size: bool = False      # 若要 size 取整（比如最小单位）
     method: str = "double_then_golden"     # double_then_golden / double_then_binary / double_then_brent
     # ★ 新增：控制 size 精度/步长
-    size_step: Optional[float] = None        # 例如 100；None 表示不限
+    size_step: Optional[float] = 5000        # 例如 100；None 表示不限
     round_mode: str = "round"                # "round" | "floor" | "ceil"
 # --------- 工具：抽取 PnL / 统一调用同步&异步回调 ---------
 

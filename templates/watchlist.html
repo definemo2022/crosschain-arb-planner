@@ -3,177 +3,153 @@
 <head>
     <title>Watchlist Manager</title>
     <style>
-        body { max-width: 800px; margin: 0 auto; padding: 20px; }
-        .pair { margin: 10px 0; padding: 10px; border: 1px solid #ddd; }
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .pair { margin: 10px 0; padding: 10px; background-color: #f0f0f0; }
         .form-group { margin: 10px 0; }
-        .token-input { display: flex; gap: 10px; }
-        .chain-item { 
-            margin: 10px 0; 
-            padding: 10px; 
-            border: 1px solid #eee;
-        }
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.5);
-        }
-        .modal-content {
-            background: white;
-            margin: 15% auto;
-            padding: 20px;
-            width: 50%;
-            border-radius: 5px;
-        }
-        .error { 
-            color: red; 
-            margin-top: 5px;
-            font-size: 0.9em;
-        }
-        .success {
-            color: green;
-            padding: 10px;
-            margin: 10px 0;
-            display: none;
-        }
-
-        /* Add spacing between sections */
-        section {
-            margin: 30px 0;
-        }
-        
-        /* Make form more prominent */
-        form {
-            background: #f9fafb;
-            padding: 20px;
-            border-radius: 8px;
-            border: 1px solid #e5e7eb;
-        }
+        label { display: inline-block; width: 100px; }
+        select, input { width: 200px; padding: 5px; }
+        button { margin: 5px; padding: 5px 10px; }
     </style>
 </head>
 <body>
     <h1>Watchlist Manager</h1>
     
-    <!-- Move form to top -->
-    <section>
+    <div id="add-pair">
         <h2>Add New Pair</h2>
-        <form id="pairForm">
-            <div class="form-group">
-                <label>From Chain:</label>
-                <select name="a_chain" id="a_chain" required>
-                    <option value="">Select Chain</option>
-                    {{CHAIN_OPTIONS}}
-                </select>
-            </div>
-            <div class="form-group">
-                <label>From Token:</label>
-                <select name="a_token" id="a_token" required>
-                    <option value="">Select Token</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>To Chain:</label>
-                <select name="b_chain" id="b_chain" required>
-                    <option value="">Select Chain</option>
-                    {{CHAIN_OPTIONS}}
-                </select>
-            </div>
-            <div class="form-group">
-                <label>To Token:</label>
-                <select name="b_token" id="b_token" required>
-                    <option value="">Select Token</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>Base Amount:</label>
-                <input type="number" name="base" id="base" required min="0" step="0.1">
-            </div>
-            <button type="submit">Add Pair</button>
-        </form>
-    </section>
-
-    <!-- Move watchlist to bottom -->
-    <section>
-        <h2>Current Watchlist</h2>
-        <div id="current-pairs">
-            {{CURRENT_PAIRS}}
+        <div class="form-group">
+            <label>From Chain:</label>
+            <select id="fromChain">
+                {{CHAIN_OPTIONS}}
+            </select>
         </div>
-    </section>
+        
+        <div class="form-group">
+            <label>Token A:</label>
+            <select id="tokenA"></select>
+        </div>
+        
+        <div class="form-group">
+            <label>To Chain:</label>
+            <select id="toChain">
+                {{CHAIN_OPTIONS}}
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label>Token B:</label>
+            <select id="tokenB"></select>
+        </div>
+        
+        <div class="form-group">
+            <label>Base Amount:</label>
+            <input type="number" id="baseAmount" value="1000.0" step="0.1">
+        </div>
+        
+        <button onclick="addPair()">Add Pair</button>
+    </div>
 
-    <!-- Remove duplicate current pairs section -->
-    <div id="success-message" class="success"></div>
+    <div id="error" style="color: red;"></div>
+
+    <h2>Current Pairs</h2>
+    <div id="pairs">
+        {{CURRENT_PAIRS}}
+    </div>
 
     <script>
-        // Token map from config - 修复 JSON 语法
-        const tokenMap = JSON.parse('{{TOKEN_MAP}}');
+        // Global token map - initialized as empty object
+        var tokenMap = {};
         
-        // Update token options when chain changes
-        function updateTokens(chainSelect, tokenSelect) {
-            const chain = chainSelect.value;
-            const tokens = tokenMap[chain] || [];
-            
-            tokenSelect.innerHTML = '<option value="">Select Token</option>';
-            tokens.forEach(token => {
-                tokenSelect.innerHTML += `<option value="${token}">${token}</option>`;
-            });
+        // Initialize data safely by parsing JSON string
+        function initData() {
+            try {
+                tokenMap = JSON.parse('{{{TOKEN_MAP}}}');
+                console.log('Token map initialized:', tokenMap);
+                updateTokenList('fromChain', 'tokenA');
+                updateTokenList('toChain', 'tokenB');
+            } catch (e) {
+                console.error('Failed to initialize token map:', e);
+                document.getElementById('error').textContent = 'Failed to load token data';
+            }
         }
-        
-        // Setup chain-token linkage
-        document.getElementById('a_chain').onchange = function() {
-            updateTokens(this, document.getElementById('a_token'));
-        };
-        document.getElementById('b_chain').onchange = function() {
-            updateTokens(this, document.getElementById('b_token'));
-        };
 
-        document.getElementById('pairForm').onsubmit = async function(event) {
-            event.preventDefault();
+        function updateTokenList(chainSelectId, tokenSelectId) {
+            try {
+                const chain = document.getElementById(chainSelectId).value;
+                const tokenSelect = document.getElementById(tokenSelectId);
+                tokenSelect.innerHTML = '';
+                
+                console.log('Updating tokens for chain:', chain);
+                const tokens = tokenMap[chain] || [];
+                console.log('Available tokens:', tokens);
+                
+                tokens.forEach(token => {
+                    const option = document.createElement('option');
+                    option.value = token;
+                    option.text = token;
+                    tokenSelect.appendChild(option);
+                });
+            } catch (e) {
+                console.error('Error updating token list:', e);
+            }
+        }
+
+        // Initialize when page loads
+        window.addEventListener('load', initData);
+
+        // Add change event listeners when DOM is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('fromChain').addEventListener('change', function() {
+                updateTokenList('fromChain', 'tokenA');
+            });
+            
+            document.getElementById('toChain').addEventListener('change', function() {
+                updateTokenList('toChain', 'tokenB');
+            });
+        });
+
+        async function addPair() {
+            const pair = {
+                A_chain: document.getElementById('fromChain').value,
+                B_chain: document.getElementById('toChain').value,
+                A: document.getElementById('tokenA').value,
+                B: document.getElementById('tokenB').value,
+                base: parseFloat(document.getElementById('baseAmount').value)
+            };
 
             try {
-                const pair = {
-                    A_chain: document.getElementById('a_chain').value,
-                    B_chain: document.getElementById('b_chain').value,
-                    A: document.getElementById('a_token').value.trim().toUpperCase(),
-                    B: document.getElementById('b_token').value.trim().toUpperCase(),
-                    base: parseFloat(document.getElementById('base').value)
-                };
-
-                console.log('Submitting pair:', pair);  // Debug log
-
                 const response = await fetch('/api/pairs', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json'
+                        'Content-Type': 'application/json'
                     },
                     body: JSON.stringify(pair)
                 });
 
                 const result = await response.json();
-                console.log('Server response:', result);  // Debug log
-
                 if (result.status === 'success') {
                     window.location.reload();
                 } else {
-                    alert(result.message || 'Failed to add pair');
+                    document.getElementById('error').textContent = result.message;
                 }
-            } catch (error) {
-                console.error('Error:', error);  // Debug log
-                alert('Failed to add pair: ' + error.message);
+            } catch (e) {
+                document.getElementById('error').textContent = 'Error adding pair';
             }
-        };
+        }
 
-        function deletePair(index) {
-            if (confirm('Are you sure you want to delete this pair?')) {
-                fetch(`/api/pairs/${index}`, {
+        async function deletePair(index) {
+            try {
+                const response = await fetch(`/api/pairs/${index}`, {
                     method: 'DELETE'
-                }).then(() => {
-                    // Reload the whole page to show updated watchlist
-                    window.location.reload();
                 });
+
+                const result = await response.json();
+                if (result.status === 'success') {
+                    window.location.reload();
+                } else {
+                    document.getElementById('error').textContent = result.message;
+                }
+            } catch (e) {
+                document.getElementById('error').textContent = 'Error deleting pair';
             }
         }
     </script>

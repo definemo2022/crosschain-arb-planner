@@ -2,7 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-
+from assets import Token
 LEG_OK = "ok"
 LEG_NO_ADDR = "no-addr"
 LEG_NO_QUOTE = "no-quote"
@@ -10,17 +10,21 @@ LEG_ERROR = "error"
 
 @dataclass
 class LegQuote:
-    chain: str
-    a: str
-    b: str
-    base_in: float
-    in_wei: Optional[int]
-    out_b: Optional[float]
-    out_wei: int
-    adapter: str
-    status: str
-    note: str = ""
-    elapsed_ms: Optional[int] = None
+    """单腿报价结果"""
+    chain: str           # 链名称
+    a: str              # 代币 A 符号
+    b: str              # 代币 B 符号
+    base_in: float      # 基础输入数量
+    in_wei: Optional[int]   # 输入 wei 数量
+    out_b: Optional[float]  # 输出基础数量
+    out_wei: int           # 输出 wei 数量
+    adapter: str        # 适配器名称
+    status: str         # 状态码
+    note: str = ""      # 备注信息
+    
+    # 可以添加 Token 对象引用
+    a_token: Optional[Token] = None  # Token A 对象
+    b_token: Optional[Token] = None  # Token B 对象
 
     @classmethod
     def from_row_dict(cls, row: Dict[str, Any]) -> "LegQuote":
@@ -74,6 +78,13 @@ class LegQuote:
             f"<td>{esc(self.note)}</td>"
             "</tr>"
         )
+
+    def __str__(self) -> str:
+        if self.status != LEG_OK:
+            return f"{self.chain}:{self.a}>{self.b} [{self.status}] {self.note}"
+        return (f"{self.chain}:{self.a}>{self.b} "
+                f"{self.base_in:.2f}->{self.out_b:.2f} "
+                f"via {self.adapter}")
 
 # leg_quote.py 追加/替换 TwoLegResult 定义
 @dataclass

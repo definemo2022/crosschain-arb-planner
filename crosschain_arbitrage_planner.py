@@ -2,12 +2,13 @@
 from __future__ import annotations
 import os, json, time, argparse, asyncio, traceback
 from dataclasses import dataclass
-from typing import Dict, Any,  List, Optional
+from typing import Dict, Any, List, Optional
 from size_optimizer import OptimizeConfig, optimize_size_async
 from leg_quote import LegQuote, TwoLegResult, LEG_OK, LEG_NO_ADDR, LEG_NO_QUOTE, LEG_ERROR
 from adapters import build_adapters, best_quote_leg
 from logger_utils import init_debug_logger, NullLogger
 from chains import load_chains_from_config, Chains
+from assets import load_assets_from_config, Token, Tokens, Asset, Assets
 
 @dataclass
 class Chain:
@@ -16,16 +17,10 @@ class Chain:
     kyber_slug: str
 
 @dataclass
-class Asset:
-    symbol: str
-    decimals: int
-    address: Dict[str, str]  # chain_name -> addr
-
-@dataclass
 class AppConfig:
     api: Dict[str, Any]
-    chains: List[Chain]  # Changed from Dict[str, Chain] to List[Chain]
-    assets: Dict[str, Asset]
+    chains: List[Chain]
+    assets: Assets  # Change this from Dict[str, Asset] to Assets
     settings: Dict[str, Any]
 
 
@@ -254,13 +249,12 @@ def load_config(config_path: str) -> AppConfig:
         CHAINS = load_chains_from_config(raw)
         DBG.info(f"Loaded {len(CHAINS)} chains")
         
-        assets = {a["symbol"].upper(): Asset(a["symbol"].upper(), 
-                                           int(a["decimals"]), 
-                                           {k.lower(): v for k, v in a["address"].items()}) 
-                 for a in raw["assets"]}
+        # 加载资产
+        assets = load_assets_from_config(raw, CHAINS)
+        DBG.info(f"Loaded {len(assets.assets)} assets")
         
         return AppConfig(
-            api=raw.get("api", {}),  # Added api parameter
+            api=raw.get("api", {}),
             chains=list(CHAINS),
             assets=assets,
             settings=raw.get("settings", {})
@@ -401,27 +395,76 @@ async def odos_quote(app: AppConfig, chain: Chain, sell_addr: str, buy_addr: str
     return {"ok": True, "adapter": "odos", "out_wei": out_amt, "raw": data}
 
 async def quote_basic_leg(app, chain, a_sym, b_sym, base_in: float) -> "LegQuote":
-    """Get basic quote from adapters for a token pair on a single chain.
+    """Get basic quote from adapters for a token pair on a single chain."""
+    DBG.info(f"[DEBUG] quote_basic_leg start: {a_sym}>{b_sym} on {chain.name}")
     
-    Args:
-        app: Application config
-        chain: Chain configuration 
-        a_sym: Input token symbol
-        b_sym: Output token symbol
-        base_in: Input amount
-        
-    Returns:
-        LegQuote: Quote result from best adapter
-    """
+    # Get assets using new Assets class methods
+    a_asset = app.assets.get_asset(a_sym)
+    b_asset = app.assets.get_asset(b_sym)
+    
+    DBG.info(f"[DEBUG] Assets found: A={bool(a_asset)} ({a_sym}), B={bool(b_asset)} ({b_sym})")
+    
+    if not a_asset or not b_asset:
+        msg = f"Asset not found: {a_sym if not a_asset else b_sym}"
+        DBG.error(f"[DEBUG] {msg}")
+        return LegQuote(
+            chain=chain.name,
+            a=a_sym,
+            b=b_sym,
+            base_in=base_in,
+            in_wei=None,
+            out_b=None,
+            out_wei=0,
+            adapter="-",
+            status=LEG_NO_ADDR,
+            note=msg
+        )
+
+    a_token = a_asset.get_token(chain.name)
+    b_token = b_asset.get_token(chain.name)
+    
+    DBG.info(f"[DEBUG] Tokens on {chain.name}:")
+    DBG.info(f"[DEBUG] A token: {a_token}")
+    DBG.info(f"[DEBUG] B token: {b_token}")
+    
+    if not a_token or not b_token:
+        msg = f"Token not found on {chain.name}"
+        DBG.error(f"[DEBUG] {msg}")
+        return LegQuote(
+            chain=chain.name,
+            a=a_sym,
+            b=b_sym,
+            base_in=base_in,
+            in_wei=None,
+            out_b=None,
+            out_wei=0,
+            adapter="-",
+            status=LEG_NO_ADDR,
+            note=msg
+        )
+
+    # Convert input amount to wei
+    in_wei = int(float(base_in) * (10 ** a_token.decimals))
+    
     # 由主程序把现有函数指针注入适配器，避免循环 import
     qmap = {
         "kyber": kyber_quote if "kyber_quote" in globals() else None,
         "odos":  odos_quote  if "odos_quote"  in globals() else None,
     }
+    
     adapters = build_adapters(app, qmap)
     # 交给聚合器并发对比，拿到标准 LegQuote
-    leg = await best_quote_leg(app, chain, str(a_sym).upper(), str(b_sym).upper(),
-                               float(base_in), adapters)
+    leg = await best_quote_leg(
+        app=app,
+        chain=chain,
+        a_sym=a_sym,
+        b_sym=b_sym,
+        base_in=base_in,
+        adapters=adapters,
+        a_token=a_token,
+        b_token=b_token
+    )
+    
     return leg
 
 async def _quote_two_leg(app, ci, cj, a_sym: str, b_sym: str, base_in_a: float) -> TwoLegResult:
@@ -572,7 +615,7 @@ async def quote_two_leg_once(app, ci, cj, a_sym: str, b_sym: str, base_in_a: flo
             from_chain=ci.name,
             to_chain=cj.name,
             a=a_sym,
-            b=b_sym,
+            b_sym=b_sym,
             base_in_a=base_in_a,
             leg1=None,
             leg2=None,
@@ -585,64 +628,66 @@ async def quote_two_leg_once(app, ci, cj, a_sym: str, b_sym: str, base_in_a: flo
 
 # 5. Mode functions
 async def run_one_leg_mode(app: AppConfig, pair_spec: str, out_html: str, refresh: int, verbose: bool, once: bool, pair_any: str):
-    """运行单腿报价模式：在单一链上查询代币对的报价"""
+    """运行单腿报价模式"""
     _ensure_dir(os.path.dirname(out_html))
     _write_placeholder_html(out_html, "Single Leg Mode", refresh)
     
     global DBG
     DBG = init_debug_logger("single-leg", out_html, verbose)
     
-    # Add debug logs for pair_any mode
-    if pair_any:
-        DBG.info(f"[DEBUG] Running in pair-any mode with spec: {pair_any}")
-        DBG.info(f"[DEBUG] Available chains: {[chain.name for chain in app.chains]}")
-        
-        # Check adapter support for each chain
-        for chain in app.chains:
-            DBG.info(f"[DEBUG] Checking adapters for chain {chain.name}")
-            for adapter_name, chains in app.settings.get("adapter_support", {}).items():
-                DBG.info(f"[DEBUG] Adapter {adapter_name} supports: {chains}")
-                if chain.name.lower() in [c.lower() for c in chains]:
-                    DBG.info(f"[DEBUG] Chain {chain.name} is supported by {adapter_name}")
-                else:
-                    DBG.info(f"[DEBUG] Chain {chain.name} is NOT supported by {adapter_name}")
-    
     while True:
         try:
-            # 获取代币对信息
+            # Handle pair-any mode
             if pair_any:
                 if ">" not in pair_any:
-                    raise ValueError(f"pair-any 格式应为 'A>B'，当前: {pair_any}")
-                a_sym, b_sym = [x.strip().upper() for x in pair_any.split(">")]
-                DBG.info(f"[DEBUG] Parsed tokens: {a_sym} > {b_sym}")
+                    raise ValueError(f"Invalid pair-any format: {pair_any}")
+                    
+                a_sym, b_sym = pair_any.split(">")
+                DBG.info(f"[DEBUG] Parsed pair-any tokens: {a_sym}>{b_sym}")
                 
-                # Create a list to store all quotes
-                all_legs = []
-                
-                # Try quote on each chain
+                # Get quotes for all chains
+                legs = []
                 for chain in app.chains:
-                    DBG.info(f"[DEBUG] Attempting quote on chain: {chain.name}")
-                    try:
-                        leg = await quote_basic_leg(app, chain, a_sym, b_sym, 100000)
-                        DBG.info(f"[DEBUG] Quote result for {chain.name}: status={leg.status}")
-                        all_legs.append(leg)
-                    except Exception as e:
-                        DBG.error(f"[DEBUG] Error quoting on {chain.name}: {e}")
-                        continue
-                
-                DBG.info(f"[DEBUG] Got {len(all_legs)} quotes from {len(app.chains)} chains")
+                    DBG.info(f"[DEBUG] Getting quote for {a_sym}>{b_sym} on {chain.name}")
+                    leg = await quote_basic_leg(app, chain, a_sym, b_sym, 1000)
+                    legs.append(leg)
                 
                 # Render all results
                 html = render_legs_page(
-                    title=f"Multi-Chain Quote: {a_sym}>{b_sym}",
+                    title=f"Multi-Chain Quote: {pair_any}",
                     refresh=refresh,
-                    legs=all_legs
+                    legs=legs
                 )
                 _write_html(out_html, html)
-            
+                
+            # Handle single chain mode
             else:
-                # ... existing single chain code ...
-                pass
+                if not pair_spec or ":" not in pair_spec or ">" not in pair_spec:
+                    raise ValueError(f"Invalid pair spec format: {pair_spec}")
+                    
+                chain_name, tokens = pair_spec.split(":")
+                a_sym, b_sym = tokens.split(">")
+                
+                DBG.info(f"[DEBUG] Parsed spec - chain: {chain_name}, tokens: {a_sym}>{b_sym}")
+                
+                # 获取链对象
+                chain = CHAINS.get_chain(chain_name)
+                if not chain:
+                    raise ValueError(f"Chain not found: {chain_name}")
+                DBG.info(f"[DEBUG] Found chain: {chain.name}")
+                
+                # 获取报价
+                DBG.info(f"[DEBUG] Getting quote for {a_sym}>{b_sym} on {chain.name}")
+                leg = await quote_basic_leg(app, chain, a_sym, b_sym, 1000)
+                DBG.info(f"[DEBUG] Quote result: status={leg.status}, note={leg.note}")
+                
+                # 渲染结果
+                html = render_legs_page(
+                    title=f"Single Leg Quote: {pair_spec}",
+                    refresh=refresh,
+                    legs=[leg]
+                )
+                _write_html(out_html, html)
             
             if once:
                 break
@@ -652,7 +697,8 @@ async def run_one_leg_mode(app: AppConfig, pair_spec: str, out_html: str, refres
         except KeyboardInterrupt:
             break
         except Exception as e:
-            DBG.error(f"Error in single leg mode: {e}")
+            DBG.error(f"Error in leg mode: {e}")
+            traceback.print_exc()
             if once:
                 break
             await asyncio.sleep(refresh)

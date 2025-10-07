@@ -5,8 +5,9 @@ import json
 import os
 import logging
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from chains import Chains, load_chains_from_config
+from assets import Assets, load_assets_from_config
 
 app = Flask(__name__)
 WATCHLIST_PATH = "./watchlist.json"
@@ -16,45 +17,37 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 def load_config(config_path: str) -> Dict:
-    """Load config.json and transform it into required format"""
-    logger.debug(f"Loading config from {config_path}")
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-            
-        # Transform chains list to dict format
-        chains_dict = {}
-        for chain in config['chains']:
-            chains_dict[chain['name']] = {
-                'name': chain['name'],
-                'chainId': chain['chain_id'],
-                'enabled': True  # Assume all chains are enabled
-            }
-            
-        # Transform assets list to dict format    
-        assets_dict = {}
-        for asset in config['assets']:
-            assets_dict[asset['symbol']] = {
-                'symbol': asset['symbol'],
-                'decimals': asset['decimals'],
-                'address': asset['address']
-            }
-            
-        return {
-            'chains': chains_dict,
-            'assets': assets_dict
-        }
-        
-    except Exception as e:
-        logger.error(f"Error loading config: {e}")
-        raise
+    """Load config file and return token map"""
+    with open(config_path) as f:
+        config = json.load(f)
+
+    # Build token map for each chain
+    token_map = {}
+    for asset in config.get('assets', []):
+        for variant in asset.get('variants', []):
+            variant_name = variant['name']
+            for chain_name in variant['tokens'].keys():
+                if chain_name not in token_map:
+                    token_map[chain_name] = []
+                if variant_name not in token_map[chain_name]:
+                    token_map[chain_name].append(variant_name)
+
+    # Sort token lists
+    for chain in token_map:
+        token_map[chain].sort()
+
+    return {
+        'token_map': token_map,
+        'chains': list(token_map.keys())
+    }
 
 def get_chain_tokens(config: Dict, chain: str) -> List[str]:
     """Get available tokens for a specific chain"""
     tokens = []
-    for symbol, asset in config['assets'].items():
-        if chain in asset['address']:
-            tokens.append(symbol)
+    for asset in config['assets']:
+        for variant in asset['variants']:
+            if chain in variant['tokens']:
+                tokens.append(variant['name'])
     return sorted(tokens)
 
 def load_watchlist() -> List[Dict]:
@@ -74,54 +67,38 @@ def load_watchlist() -> List[Dict]:
         return []
 
 def render_watchlist_page(config_path: str) -> str:
-    """Generate watchlist management page"""
-    logger.debug("Starting page rendering")
+    """Render watchlist page with config data"""
     config = load_config(config_path)
+    pairs = load_watchlist()
     
-    # Get enabled chains
-    enabled_chains = sorted(config['chains'].keys())
-    logger.debug(f"Enabled chains: {enabled_chains}")
-    
-    # Generate chain options HTML
-    chain_options = '\n'.join([
-        f'<option value="{chain}">{chain.upper()}</option>' 
-        for chain in enabled_chains
-    ])
-    
-    # Create token map for each chain
-    token_map = {
-        chain: get_chain_tokens(config, chain) 
-        for chain in enabled_chains
-    }
-    
-    # Load current watchlist
-    current_pairs = load_watchlist()
-    current_pairs_html = '\n'.join([
-        f"""
+    # Build chain options HTML
+    chain_options = ''
+    for chain in sorted(config['chains']):
+        chain_options += f'<option value="{chain}">{chain}</option>\n'
+
+    # Build current pairs HTML
+    current_pairs = ''
+    for i, pair in enumerate(pairs):
+        current_pairs += f'''
         <div class="pair">
-            {pair['A_chain'].upper()}:{pair['A']} → {pair['B_chain'].upper()}:{pair['B']}
-            (Base: {pair['base']})
+            {pair['A_chain']}:{pair['A']} > {pair['B_chain']}:{pair['B']} ({pair['base']})
             <button onclick="deletePair({i})">Delete</button>
         </div>
-        """
-        for i, pair in enumerate(current_pairs)
-    ]) if current_pairs else '<div class="pair">No pairs in watchlist</div>'
-    
-    logger.debug(f"Generated HTML for {len(current_pairs) if current_pairs else 0} pairs")
-    
-    # Load and render template
-    try:
-        with open('templates/watchlist.html', 'r', encoding='utf-8') as f:
-            template = f.read()
-            
-        html = template.replace('{{CHAIN_OPTIONS}}', chain_options)
-        html = html.replace('{{TOKEN_MAP}}', json.dumps(token_map))
-        html = html.replace('{{CURRENT_PAIRS}}', current_pairs_html)  # Add this line
-        return html
-        
-    except Exception as e:
-        logger.error(f"Error rendering template: {e}")
-        raise
+        '''
+
+    # Read template
+    with open('templates/watchlist.html', 'r', encoding='utf-8') as f:
+        template = f.read()
+
+    # Convert token map to JSON string with proper escaping
+    token_map_str = json.dumps(config['token_map']).replace("'", "\\'").replace('"', '\\"')
+
+    # Replace placeholders
+    html = template.replace('{{{TOKEN_MAP}}}', token_map_str)
+    html = html.replace('{{CHAIN_OPTIONS}}', chain_options)
+    html = html.replace('{{CURRENT_PAIRS}}', current_pairs)
+
+    return html
 
 @app.route('/')
 def index():
@@ -237,87 +214,120 @@ def delete_pair(index):
         }), 500
 
 class WatchlistManager:
-    def __init__(self, chains: Chains):
-        """Initialize with Chains instance"""
+    def __init__(self, chains: Chains, assets: Assets):
         self.chains = chains
+        self.assets = assets
         self.root = tk.Tk()
         self.root.title("Watchlist Manager")
         self.pairs: List[Dict] = []
-        self.filename = ""
         self._setup_ui()
+        self.filename = "watchlist.json"
 
     def _setup_ui(self):
-        """Set up the user interface"""
-        # Frame for chain selection
-        frame = tk.Frame(self.root)
-        frame.pack(padx=10, pady=10)
+        # Chain selection
+        chain_frame = ttk.LabelFrame(self.root, text="Chains", padding="5 5 5 5")
+        chain_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        tk.Label(frame, text="From Chain:").grid(row=0, column=0)
-        tk.Label(frame, text="To Chain:").grid(row=1, column=0)
+        from_chain_label = ttk.Label(chain_frame, text="From Chain:")
+        from_chain_label.grid(row=0, column=0, padx=5, pady=5)
         
-        # Comboboxes for chain selection
-        self.from_chain_cb = ttk.Combobox(frame, state="readonly")
-        self.from_chain_cb.grid(row=0, column=1)
-        self.to_chain_cb = ttk.Combobox(frame, state="readonly")
-        self.to_chain_cb.grid(row=1, column=1)
-        
-        # Update chain comboboxes to use chain names from Chains
+        # Get chain names from Chains object
         chain_names = [chain.name for chain in self.chains]
-        self.from_chain_cb["values"] = chain_names
-        self.to_chain_cb["values"] = chain_names
         
-        # Buttons for adding, removing, and saving pairs
-        btn_frame = tk.Frame(self.root)
-        btn_frame.pack(pady=10)
+        self.from_chain_cb = ttk.Combobox(chain_frame, values=chain_names)
+        self.from_chain_cb.grid(row=0, column=1, padx=5, pady=5)
         
-        tk.Button(btn_frame, text="Add Pair", command=self._add_pair).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="Remove Pair", command=self._remove_pair).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="Save Watchlist", command=self._save_watchlist).pack(side=tk.LEFT, padx=5)
+        to_chain_label = ttk.Label(chain_frame, text="To Chain:")
+        to_chain_label.grid(row=0, column=2, padx=5, pady=5)
         
-        # Listbox to display watchlist pairs
-        self.pair_listbox = tk.Listbox(self.root, width=50)
-        self.pair_listbox.pack(padx=10, pady=10)
+        self.to_chain_cb = ttk.Combobox(chain_frame, values=chain_names)
+        self.to_chain_cb.grid(row=0, column=3, padx=5, pady=5)
         
-        # Status bar
-        self.status_bar = tk.Label(self.root, text="")
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        # Token selection
+        token_frame = ttk.LabelFrame(self.root, text="Tokens", padding="5 5 5 5")
+        token_frame.pack(fill=tk.X, padx=5, pady=5)
         
+        token_a_label = ttk.Label(token_frame, text="Token A:")
+        token_a_label.grid(row=0, column=0, padx=5, pady=5)
+        
+        # Get token symbols from Assets object
+        token_symbols = [asset.name for asset in self.assets.assets]
+        
+        self.token_a_cb = ttk.Combobox(token_frame, values=token_symbols)
+        self.token_a_cb.grid(row=0, column=1, padx=5, pady=5)
+        
+        token_b_label = ttk.Label(token_frame, text="Token B:")
+        token_b_label.grid(row=0, column=2, padx=5, pady=5)
+        
+        self.token_b_cb = ttk.Combobox(token_frame, values=token_symbols)
+        self.token_b_cb.grid(row=0, column=3, padx=5, pady=5)
+        
+        # Base amount
+        base_frame = ttk.LabelFrame(self.root, text="Base Amount", padding="5 5 5 5")
+        base_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        base_label = ttk.Label(base_frame, text="Base:")
+        base_label.grid(row=0, column=0, padx=5, pady=5)
+        
+        self.base_entry = ttk.Entry(base_frame)
+        self.base_entry.insert(0, "100000.0")
+        self.base_entry.grid(row=0, column=1, padx=5, pady=5)
+        
+        # Control buttons
+        btn_frame = ttk.Frame(self.root)
+        btn_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        add_btn = ttk.Button(btn_frame, text="Add Pair", command=self._add_pair)
+        add_btn.pack(side=tk.LEFT, padx=5)
+        
+        save_btn = ttk.Button(btn_frame, text="Save", command=self._save_watchlist)
+        save_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Pairs list
+        list_frame = ttk.LabelFrame(self.root, text="Pairs", padding="5 5 5 5")
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.pairs_list = tk.Listbox(list_frame)
+        self.pairs_list.pack(fill=tk.BOTH, expand=True)
+
+    def load(self, filename: str):
+        """Load watchlist from file"""
+        self.filename = filename
+        try:
+            with open(filename) as f:
+                self.pairs = json.load(f)
+                self._refresh_list()
+        except FileNotFoundError:
+            pass  # Ignore if file doesn't exist
+        except Exception as e:
+            self._show_error(f"Failed to load watchlist: {e}")
+
+    def run(self):
+        """Start the UI"""
+        self.root.mainloop()
+
     def _add_pair(self):
         """Add pair to watchlist"""
-        from_chain = self.from_chain_cb.get()
-        to_chain = self.to_chain_cb.get()
-        
-        # Validate chains exist
-        from_chain_obj = self.chains.get_chain(from_chain)
-        to_chain_obj = self.chains.get_chain(to_chain)
-        if not from_chain_obj or not to_chain_obj:
-            self._show_error("Invalid chain selected")
-            return
-            
-        # Create new pair entry
-        new_pair = {
-            "A_chain": from_chain,
-            "B_chain": to_chain,
-            "A": "",  # Placeholder for token A
-            "B": "",  # Placeholder for token B
-            "base": 0  # Placeholder for base amount
-        }
-        
-        # Add to pairs and update listbox
-        self.pairs.append(new_pair)
-        self.pair_listbox.insert(tk.END, f"{from_chain} → {to_chain}")
-        self._show_info(f"Added pair: {from_chain} → {to_chain}")
-        
-    def _remove_pair(self):
-        """Remove selected pair from watchlist"""
         try:
-            selected_index = self.pair_listbox.curselection()[0]
-            self.pairs.pop(selected_index)
-            self.pair_listbox.delete(selected_index)
-            self._show_info("Removed selected pair")
-        except Exception as e:
-            self._show_error(f"Failed to remove pair: {e}")
-            
+            pair = {
+                "A_chain": self.from_chain_cb.get(),
+                "B_chain": self.to_chain_cb.get(),
+                "A": self.token_a_cb.get(),
+                "B": self.token_b_cb.get(),
+                "base": float(self.base_entry.get())
+            }
+            self.pairs.append(pair)
+            self._refresh_list()
+        except ValueError as e:
+            self._show_error(f"Invalid input: {e}")
+
+    def _refresh_list(self):
+        """Refresh pairs list display"""
+        self.pairs_list.delete(0, tk.END)
+        for p in self.pairs:
+            self.pairs_list.insert(tk.END, 
+                f"{p['A_chain']}:{p['A']} > {p['B_chain']}:{p['B']} ({p['base']})")
+
     def _save_watchlist(self):
         """Save watchlist to file"""
         try:
@@ -326,56 +336,47 @@ class WatchlistManager:
             self._show_info(f"Saved {len(self.pairs)} pairs to {self.filename}")
         except Exception as e:
             self._show_error(f"Failed to save: {e}")
-            
-    def _show_info(self, message: str):
-        """Show informational message in status bar"""
-        self.status_bar.config(text=message, fg="green")
-        
-    def _show_error(self, message: str):
-        """Show error message in status bar"""
-        self.status_bar.config(text=message, fg="red")
-        
-    def load(self, watchlist_path: str):
-        """Load watchlist from file"""
-        self.filename = watchlist_path
-        try:
-            with open(watchlist_path, 'r') as f:
-                self.pairs = json.load(f)
-            # Update listbox
-            self.pair_listbox.delete(0, tk.END)
-            for pair in self.pairs:
-                self.pair_listbox.insert(tk.END, f"{pair['A_chain']} → {pair['B_chain']}")
-            self._show_info(f"Loaded {len(self.pairs)} pairs from {watchlist_path}")
-        except Exception as e:
-            self._show_error(f"Failed to load watchlist: {e}")
-            
-    def run(self):
-        """Run the Tkinter main loop"""
-        self.root.mainloop()
 
-# Update the main function to pass Chains instance
-def main(config_path: str, watchlist_path: str):
-    """Launch watchlist manager"""
-    try:
-        # Load chains from config
-        with open(config_path) as f:
-            config = json.load(f)
-        chains = load_chains_from_config(config)
-        
-        # Create manager with chains
-        manager = WatchlistManager(chains)
-        manager.load(watchlist_path)
-        manager.run()
-    except Exception as e:
-        print(f"Error: {e}")
-        return 1
+    def _show_error(self, msg: str):
+        """Show error message"""
+        messagebox.showerror("Error", msg)
+
+    def _show_info(self, msg: str):
+        """Show info message"""
+        messagebox.showinfo("Info", msg)
+
+def main():
+    """Main entry point"""
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['web', 'gui'], default='web',
+                       help='Run in web or GUI mode')
+    parser.add_argument('--config', default='config.json',
+                       help='Path to config file')
+    parser.add_argument('--watchlist', default='watchlist.json',
+                       help='Path to watchlist file')
+    args = parser.parse_args()
+
+    if args.mode == 'web':
+        # Run Flask web server
+        app.run(debug=True)
+    else:
+        # Run Tkinter GUI
+        try:
+            with open(args.config) as f:
+                config = json.load(f)
+            
+            chains = load_chains_from_config(config)
+            assets = load_assets_from_config(config, chains)
+            
+            manager = WatchlistManager(chains, assets)
+            manager.load(args.watchlist)
+            manager.run()
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
     return 0
 
-if __name__ == '__main__':
-    app.run(debug=True)
-    
+if __name__ == "__main__":
     import sys
-    if len(sys.argv) != 3:
-        print("Usage: watchlist_manager.py <config.json> <watchlist.json>")
-        sys.exit(1)
-    sys.exit(main(sys.argv[1], sys.argv[2]))
+    sys.exit(main())

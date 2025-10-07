@@ -1,9 +1,10 @@
 # adapters.py
 from __future__ import annotations
 import asyncio
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, List
 from leg_quote import LegQuote, LEG_OK, LEG_NO_ADDR, LEG_NO_QUOTE, LEG_ERROR
-
+from assets import Token
+import json
 # callable 签名：await fn(app, chain, in_addr, out_addr, in_wei) -> 任意(raw)
 QuoteFn = Callable[[Any, Any, str, str, int], Any]
 
@@ -21,6 +22,30 @@ class BaseAdapter:
         self.app = app
         self.quote_fn = quote_fn
 
+    async def _fetch_http(self, method: str, url: str, *, headers=None, params=None, json_body=None, timeout=12):
+        """HTTP 请求封装，统一处理异常"""
+        try:
+            import httpx
+            limits = httpx.Limits(max_keepalive_connections=16, max_connections=32)
+            async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+                if method.upper() == "GET":
+                    r = await client.get(url, headers=headers, params=params)
+                else:
+                    r = await client.post(url, headers=headers, params=params, json=json_body)
+                return r.status_code, r.text, dict(r.headers)
+        except Exception as e:
+            # 统一吞掉网络异常，返回"不可用"给上层
+            return -1, f"__EXC__:{type(e).__name__}:{str(e)[:180]}", {}
+        
+    def _safe_json_parse(self, resp_text: str, *, where: str) -> Any:
+        """JSON 解析封装，统一处理异常"""
+        try:
+            return json.loads(resp_text)
+        except Exception as e:
+            snippet = (resp_text or "")[:400].replace("\n", "\\n")
+            raise ValueError(f"{where}: non-JSON or empty body. body[:400]={snippet!r}") from e
+        
+
     def supports_chain(self, chain_name: str) -> bool:
         support = self.app.settings.get("adapter_support") or {}
         if not support:  # 未配置则默认全链可用
@@ -31,8 +56,10 @@ class BaseAdapter:
         chain_name = (chain_name or "").lower()
         return chain_name in [c.lower() for c in allow]
 
-    async def quote(self, chain: Any, a_sym: str, b_sym: str, base_in: float) -> LegQuote:
-        raise NotImplementedError
+    async def quote(self, chain: Any, a_sym: str, b_sym: str, base_in: float,
+                   a_token: Optional[Token] = None, b_token: Optional[Token] = None) -> LegQuote:
+        """虚方法，由子类实现"""
+        raise NotImplementedError("Subclass must implement quote()")
 
     # —— 通用的资产 / 地址解析 —— #
 
@@ -107,95 +134,168 @@ class BaseAdapter:
     # —— 统一组装 LegQuote —— #
 
     def _make_leg(self, chain_name: str, a_sym: str, b_sym: str, base_in: float,
-                  adapter: str, out_wei: int, dB: int, status: str, note: str = "") -> LegQuote:
+                  adapter: str, out_wei: int, dB: int, status: str, note: str = "",
+                  a_token: Optional[Token] = None, b_token: Optional[Token] = None) -> LegQuote:
         out_b = (out_wei / float(10 ** dB)) if (out_wei and dB is not None) else None
         return LegQuote(
-            chain=chain_name, a=a_sym, b=b_sym, base_in=float(base_in),
-            in_wei=None, out_b=out_b, out_wei=int(out_wei or 0),
-            adapter=adapter, status=status, note=note
+            chain=chain_name, 
+            a=a_sym, 
+            b=b_sym, 
+            base_in=float(base_in),
+            in_wei=None, 
+            out_b=out_b, 
+            out_wei=int(out_wei or 0),
+            adapter=adapter, 
+            status=status, 
+            note=note,
+            a_token=a_token,  # Add Token objects
+            b_token=b_token
         )
 
 
 class KyberAdapter(BaseAdapter):
     name = "kyber"
-
-    async def quote(self, chain: Any, a_sym: str, b_sym: str, base_in: float) -> LegQuote:
+    
+    async def quote(self, chain: Any, a_sym: str, b_sym: str, base_in: float,
+                   a_token: Optional[Token] = None, b_token: Optional[Token] = None) -> LegQuote:
+        """Get quote from Kyber"""
         chain_name = getattr(chain, "name", "?")
         if not self.supports_chain(chain_name):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, 18, LEG_NO_QUOTE, "adapter disabled on chain")
+            return self._make_leg(chain_name, a_sym, b_sym, base_in, 
+                                self.name, 0, None, LEG_NO_QUOTE, "adapter disabled on chain",
+                                a_token, b_token)
 
-        if not callable(self.quote_fn):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, 18, LEG_ERROR, "adapter quote_fn missing")
-
-        A = self._get_asset(a_sym); B = self._get_asset(b_sym)
-        if not (A and B):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, 18, LEG_ERROR, "unknown asset")
-
-        in_addr  = self._addr(A, chain_name)
-        out_addr = self._addr(B, chain_name)
-        if not (in_addr and out_addr):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, 18, LEG_NO_ADDR, "missing token address")
-
-        dA = self._decimals(A); dB = self._decimals(B)
-        try:
-            in_wei = int(float(base_in) * (10 ** dA))
-        except Exception:
-            in_wei = 0
-
-        if in_wei <= 0:
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, dB, LEG_ERROR, "invalid base_in")
+        if not (a_token and b_token):
+            return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                self.name, 0, None, LEG_NO_ADDR, "missing token objects",
+                                a_token, b_token)
 
         try:
-            raw = await self.quote_fn(self.app, chain, in_addr, out_addr, in_wei)
-            out_wei = self._normalize_out_wei(raw)
-            if out_wei <= 0:
-                return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, dB, LEG_NO_QUOTE, "no quote")
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, out_wei, dB, LEG_OK, "")
-        except asyncio.CancelledError:
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, dB, LEG_NO_QUOTE, "cancelled")
+            in_wei = int(float(base_in) * (10 ** a_token.decimals))
+            
+            # Original kyber_quote logic
+            base = self.app.api.get("kyber_base", "https://aggregator-api.kyberswap.com").rstrip("/")
+            qs = {
+                "tokenIn": a_token.address,
+                "tokenOut": b_token.address,
+                "amountIn": str(in_wei),
+                "gasInclude": "1",
+                "saveGas": "0"
+            }
+            
+            # Get kyber_slug or fall back to chain name
+            chain_path = getattr(chain, "kyber_slug", None) or chain.name.lower()
+            
+            # Try routes endpoint first
+            url1 = f"{base}/{chain_path}/api/v1/routes"
+            code, text, headers = await self._fetch_http("GET", url1, params=qs)
+            if code == 200 and text:
+                try:
+                    data = self._safe_json_parse(text, where=f"kyber {url1}")
+                    out_amt = None
+                    d = data.get("data") if isinstance(data, dict) else None
+                    if isinstance(d, dict):
+                        rs = d.get("routeSummary")
+                        if isinstance(rs, dict) and "amountOut" in rs:
+                            out_amt = int(rs["amountOut"])
+                    if out_amt is None and "route" in data and "amountOut" in data["route"]:
+                        out_amt = int(data["route"]["amountOut"])
+                    if out_amt is not None:
+                        return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                           self.name, out_amt, b_token.decimals, LEG_OK)
+                except Exception:
+                    pass
+
+            # Try fallback endpoint
+            url2 = f"{base}/{chain_path}/api/v1/route"
+            code2, text2, _ = await self._fetch_http("GET", url2, params=qs)
+            if code2 == 200 and text2:
+                try:
+                    data2 = self._safe_json_parse(text2, where=f"kyber {url2}")
+                    out_amt = None
+                    d2 = data2.get("data") if isinstance(data2, dict) else None
+                    if isinstance(d2, dict) and "routeSummary" in d2 and "amountOut" in d2["routeSummary"]:
+                        out_amt = int(d2["routeSummary"]["amountOut"])
+                    if out_amt is None and "route" in data2 and "amountOut" in data2["route"]:
+                        out_amt = int(data2["route"]["amountOut"])
+                    if out_amt is not None:
+                        return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                           self.name, out_amt, b_token.decimals, LEG_OK)
+                except Exception as e:
+                    return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                        self.name, 0, None, LEG_ERROR, str(e),
+                                        a_token, b_token)
+
+            body = (text or text2 or "")[:200]
+            return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                self.name, 0, None, LEG_NO_QUOTE,
+                                f"HTTP {code or code2}", a_token, b_token)
+
         except Exception as e:
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, dB, LEG_ERROR, str(e))
-
+            return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                self.name, 0, None, LEG_ERROR, str(e),
+                                a_token, b_token)
 
 class OdosAdapter(BaseAdapter):
     name = "odos"
-
-    async def quote(self, chain: Any, a_sym: str, b_sym: str, base_in: float) -> LegQuote:
+    
+    async def quote(self, chain: Any, a_sym: str, b_sym: str, base_in: float,
+                   a_token: Optional[Token] = None, b_token: Optional[Token] = None) -> LegQuote:
+        """Get quote from Odos"""
         chain_name = getattr(chain, "name", "?")
         if not self.supports_chain(chain_name):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, 18, LEG_NO_QUOTE, "adapter disabled on chain")
+            return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                self.name, 0, None, LEG_NO_QUOTE, "adapter disabled on chain",
+                                a_token, b_token)
 
-        if not callable(self.quote_fn):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, 18, LEG_ERROR, "adapter quote_fn missing")
-
-        A = self._get_asset(a_sym); B = self._get_asset(b_sym)
-        if not (A and B):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, 18, LEG_ERROR, "unknown asset")
-
-        in_addr  = self._addr(A, chain_name)
-        out_addr = self._addr(B, chain_name)
-        if not (in_addr and out_addr):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, 18, LEG_NO_ADDR, "missing token address")
-
-        dA = self._decimals(A); dB = self._decimals(B)
-        try:
-            in_wei = int(float(base_in) * (10 ** dA))
-        except Exception:
-            in_wei = 0
-
-        if in_wei <= 0:
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, dB, LEG_ERROR, "invalid base_in")
+        if not (a_token and b_token):
+            return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                self.name, 0, None, LEG_NO_ADDR, "missing token objects",
+                                a_token, b_token)
 
         try:
-            raw = await self.quote_fn(self.app, chain, in_addr, out_addr, in_wei)
-            out_wei = self._normalize_out_wei(raw)
-            if out_wei <= 0:
-                return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, dB, LEG_NO_QUOTE, "no quote")
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, out_wei, dB, LEG_OK, "")
-        except asyncio.CancelledError:
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, dB, LEG_NO_QUOTE, "cancelled")
+            in_wei = int(float(base_in) * (10 ** a_token.decimals))
+            
+            # Original odos_quote logic
+            base = self.app.api.get("odos_base", "https://api.odos.xyz").rstrip("/")
+            url = f"{base}/sor/quote/v2"
+            payload = {
+                "chainId": chain.id,
+                "inputTokens": [{"tokenAddress": a_token.address, "amount": str(in_wei)}],
+                "outputTokens": [{"tokenAddress": b_token.address}],
+                "userAddr": self.app.api.get("odos_user_addr", "0x0000000000000000000000000000000000000001"),
+                "slippageLimitPercent": float(self.app.settings.get("slippage_limit_percent", 0.5)),
+                "compact": True
+            }
+            
+            code, text, _ = await self._fetch_http("POST", url, json_body=payload)
+            if code != 200:
+                return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                    self.name, 0, None, LEG_NO_QUOTE,
+                                    f"HTTP {code}", a_token, b_token)
+
+            data = self._safe_json_parse(text, where=f"odos {url}")
+            out_amt = None
+            if isinstance(data, dict):
+                if "outAmounts" in data and isinstance(data["outAmounts"], list) and data["outAmounts"]:
+                    out_amt = int(data["outAmounts"][0])
+                elif "outAmount" in data:
+                    out_amt = int(data["outAmount"])
+                elif "outputTokens" in data and data["outputTokens"] and "amount" in data["outputTokens"][0]:
+                    out_amt = int(data["outputTokens"][0]["amount"])
+
+            if out_amt is None:
+                return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                    self.name, 0, None, LEG_NO_QUOTE,
+                                    "missing outAmount", a_token, b_token)
+
+            return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                self.name, out_amt, b_token.decimals, LEG_OK)
+
         except Exception as e:
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, self.name, 0, dB, LEG_ERROR, str(e))
+            return self._make_leg(chain_name, a_sym, b_sym, base_in,
+                                self.name, 0, None, LEG_ERROR, str(e),
+                                a_token, b_token)
 
 
 # —— 构造与聚合 —— #
@@ -212,56 +312,68 @@ def build_adapters(app: Any, quote_fns: Dict[str, Optional[QuoteFn]]):
         lst.append(OdosAdapter(app, quote_fns.get("odos")))
     return lst
 
-async def best_quote_leg(app: Any, chain: Any, a_sym: str, b_sym: str, base_in: float,
-                         adapters: list[BaseAdapter]) -> LegQuote:
-    """
-    并发调用各 adapter.quote(...)，选 out_wei 最大的 LegQuote。
-    全部失败时返回 status=no-quote 的行。
+async def best_quote_leg(
+    app: Any,
+    chain: Any,
+    a_sym: str,
+    b_sym: str,
+    base_in: float,
+    adapters: List["BaseAdapter"],
+    a_token: Token,  # Added Token object parameter
+    b_token: Token   # Added Token object parameter
+) -> LegQuote:
+    """Get best quote from multiple adapters
+    
+    Args:
+        app: App config
+        chain: Chain object
+        a_sym: Token A symbol
+        b_sym: Token B symbol 
+        base_in: Input amount
+        adapters: List of adapter instances
+        a_token: Token A object
+        b_token: Token B object
     """
     if not adapters:
-        return LegQuote(chain=getattr(chain, "name", "?"), a=a_sym, b=b_sym, base_in=float(base_in),
-                        in_wei=None, out_b=None, out_wei=0, adapter="-", status=LEG_NO_QUOTE,
-                        note="no adapters")
+        return LegQuote(
+            chain=chain.name,
+            a=a_sym,
+            b=b_sym,
+            base_in=base_in,
+            in_wei=None,
+            out_b=None,
+            out_wei=0,
+            adapter="-",
+            status=LEG_NO_QUOTE,
+            note="no adapters",
+            a_token=a_token,  # Add Token objects
+            b_token=b_token
+        )
 
-    soft = float(app.settings.get("soft_timeout_sec", 5.0))
-    tasks = []
-    for ad in adapters:
-        # 跳过不支持的链
-        if not ad.supports_chain(getattr(chain, "name", "")):
+    # 并发查询所有适配器
+    quotes = await asyncio.gather(*[
+        a.quote(chain, a_sym, b_sym, base_in, a_token, b_token)
+        for a in adapters
+        if a.supports_chain(chain.name)
+    ])
+    
+    # 找出最佳报价
+    best = None
+    for q in quotes:
+        if q.status != LEG_OK:
             continue
-        # 每个适配器再套一层 timeout
-        tasks.append(asyncio.create_task(asyncio.wait_for(ad.quote(chain, a_sym, b_sym, base_in), timeout=soft)))
-
-    if not tasks:
-        return LegQuote(chain=getattr(chain, "name", "?"), a=a_sym, b=b_sym, base_in=float(base_in),
-                        in_wei=None, out_b=None, out_wei=0, adapter="-", status=LEG_NO_QUOTE,
-                        note="no adapters enabled on chain")
-
-    done, pending = await asyncio.wait(tasks, timeout=soft, return_when=asyncio.ALL_COMPLETED)
-    for p in pending:
-        p.cancel()
-
-    cands: list[LegQuote] = []
-    for t in done:
-        try:
-            leg: LegQuote = t.result()
-            if isinstance(leg, LegQuote) and (leg.out_wei or 0) > 0 and leg.status == LEG_OK:
-                cands.append(leg)
-        except Exception:
-            pass
-
-    if not cands:
-        # 尝试收集一个“最有信息”的失败腿（如果存在）
-        for t in done:
-            try:
-                leg = t.result()
-                if isinstance(leg, LegQuote):
-                    return leg
-            except Exception:
-                pass
-        return LegQuote(chain=getattr(chain, "name", "?"), a=a_sym, b=b_sym, base_in=float(base_in),
-                        in_wei=None, out_b=None, out_wei=0, adapter="-", status=LEG_NO_QUOTE, note="no quote")
-
-    # 按 out_wei 最大选最优
-    best = max(cands, key=lambda x: x.out_wei)
-    return best
+        if not best or q.out_b > best.out_b:
+            best = q
+            
+    return best or LegQuote(
+        chain=chain.name,
+        a=a_sym,
+        b=b_sym,
+        base_in=base_in,
+        in_wei=None,
+        out_b=None,
+        out_wei=0,
+        adapter="-",
+        status=LEG_NO_QUOTE,
+        note="no quotes"
+    )

@@ -2,11 +2,12 @@
 from __future__ import annotations
 import os, json, time, argparse, asyncio, traceback
 from dataclasses import dataclass
-from typing import Dict, Any,  List
+from typing import Dict, Any,  List, Optional
 from size_optimizer import OptimizeConfig, optimize_size_async
 from leg_quote import LegQuote, TwoLegResult, LEG_OK, LEG_NO_ADDR, LEG_NO_QUOTE, LEG_ERROR
 from adapters import build_adapters, best_quote_leg
 from logger_utils import init_debug_logger, NullLogger
+from chains import load_chains_from_config, Chains
 
 @dataclass
 class Chain:
@@ -23,7 +24,7 @@ class Asset:
 @dataclass
 class AppConfig:
     api: Dict[str, Any]
-    chains: Dict[str, Chain]
+    chains: List[Chain]  # Changed from Dict[str, Chain] to List[Chain]
     assets: Dict[str, Asset]
     settings: Dict[str, Any]
 
@@ -192,6 +193,11 @@ def _skip_pair_by_base(base_set: set[str], a_sym: str, b_sym: str) -> bool:
     allow = (a_in ^ b_in)
     return not allow  # 返回 True=跳过
 
+def find_chain(chains: List[Chain], name: str) -> Optional[Chain]:
+    """Helper to find chain by name"""
+    name = name.lower()
+    return next((c for c in chains if c.name.lower() == name), None)
+
 async def _process_watchlist(app: AppConfig, pairs: list[dict], adapters) -> List[TwoLegResult]:
     """处理 watchlist 中的交易对"""
     results = []
@@ -204,12 +210,20 @@ async def _process_watchlist(app: AppConfig, pairs: list[dict], adapters) -> Lis
         token_b = pair["b"]
         base = pair.get("base")
 
+        # Find chains using helper
+        from_chain_obj = find_chain(app.chains, from_chain)
+        to_chain_obj = find_chain(app.chains, to_chain)
+        
+        if not from_chain_obj or not to_chain_obj:
+            DBG.error(f"Chain not found: {from_chain} or {to_chain}")
+            continue
+
         DBG.info(f"[CHECK] Processing pair {i+1}: {from_chain}:{token_a} > {to_chain}:{token_b}")
         try:
             result = await quote_two_leg_once(
                 app=app,
-                ci=app.chains[from_chain],
-                cj=app.chains[to_chain],
+                ci=from_chain_obj,
+                cj=to_chain_obj,
                 a_sym=token_a,
                 b_sym=token_b,
                 base_in_a=base
@@ -224,18 +238,35 @@ async def _process_watchlist(app: AppConfig, pairs: list[dict], adapters) -> Lis
     return results
 
 # 4. Core functions
-def load_config(path: str) -> AppConfig:
-    """Load configuration"""
-    with open(path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-    chains = {c["name"].lower(): Chain(c["name"].lower(), int(c["chain_id"]), c.get("kyber_slug", c["name"].lower())) for c in raw["chains"]}
-    assets = {a["symbol"].upper(): Asset(a["symbol"].upper(), int(a["decimals"]), {k.lower(): v for k, v in a["address"].items()}) for a in raw["assets"]}
-    return AppConfig(
-        api=raw.get("api", {}),
-        chains=chains,
-        assets=assets,
-        settings=raw.get("settings", {}),
-    )
+# 全局变量定义
+CHAINS: Optional[Chains] = None
+
+def load_config(config_path: str) -> AppConfig:
+    """加载配置文件"""
+    global CHAINS
+    
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+            
+        # 初始化全局 CHAINS
+        CHAINS = load_chains_from_config(raw)
+        DBG.info(f"Loaded {len(CHAINS)} chains")
+        
+        assets = {a["symbol"].upper(): Asset(a["symbol"].upper(), 
+                                           int(a["decimals"]), 
+                                           {k.lower(): v for k, v in a["address"].items()}) 
+                 for a in raw["assets"]}
+        
+        return AppConfig(
+            api=raw.get("api", {}),  # Added api parameter
+            chains=list(CHAINS),
+            assets=assets,
+            settings=raw.get("settings", {})
+        )
+    except Exception as e:
+        DBG.error(f"Failed to load config: {e}")
+        raise
 
 def _load_watchlist_json(path: str) -> list[dict]:
     """读取 watchlist.json，返回条目列表"""
@@ -285,37 +316,11 @@ async def _fetch_http(method: str, url: str, *, headers=None, params=None, json_
         # 统一吞掉网络异常，返回“不可用”给上层
         return -1, f"__EXC__:{type(e).__name__}:{str(e)[:180]}", {}
 
-async def odos_quote(app: AppConfig, chain: Chain, sell_addr: str, buy_addr: str, amount_wei: int) -> Dict[str, Any]:
-    base = app.api.get("odos_base", "https://api.odos.xyz").rstrip("/")
-    url = f"{base}/sor/quote/v2"
-    payload = {
-        "chainId": chain.chain_id,
-        "inputTokens": [{"tokenAddress": sell_addr, "amount": str(amount_wei)}],
-        "outputTokens": [{"tokenAddress": buy_addr}],
-        "userAddr": app.api.get("odos_user_addr", "0x0000000000000000000000000000000000000001"),
-        "slippageLimitPercent": float(app.settings.get("slippage_limit_percent", 0.5)),
-        "compact": True
-    }
-    code, text, headers = await _fetch_http("POST", url, json_body=payload, timeout=int(app.settings.get("timeout_sec", 12)))
-    if code != 200:
-        return {"ok": False, "adapter": "odos", "err": f"HTTP {code}", "where": f"POST {url}", "body": (text or "")[:200]}
-    try:
-        data = _safe_json_parse(text, where=f"odos {url}")
-    except Exception as e:
-        return {"ok": False, "adapter": "odos", "err": str(e)}
-    out_amt = None
-    if isinstance(data, dict):
-        if "outAmounts" in data and isinstance(data["outAmounts"], list) and data["outAmounts"]:
-            out_amt = int(data["outAmounts"][0])
-        elif "outAmount" in data:
-            out_amt = int(data["outAmount"])
-        elif "outputTokens" in data and data["outputTokens"] and "amount" in data["outputTokens"][0]:
-            out_amt = int(data["outputTokens"][0]["amount"])
-    if out_amt is None:
-        return {"ok": False, "adapter": "odos", "err": "missing outAmount", "data_keys": list(data.keys())}
-    return {"ok": True, "adapter": "odos", "out_wei": out_amt, "raw": data}
-
 async def kyber_quote(app: AppConfig, chain: Chain, sell_addr: str, buy_addr: str, amount_wei: int) -> Dict[str, Any]:
+    """Get quote from Kyber
+    
+    If chain.kyber_slug is not available, falls back to chain.name
+    """
     base = app.api.get("kyber_base", "https://aggregator-api.kyberswap.com").rstrip("/")
     qs = {
         "tokenIn": sell_addr,
@@ -324,8 +329,13 @@ async def kyber_quote(app: AppConfig, chain: Chain, sell_addr: str, buy_addr: st
         "gasInclude": "1",
         "saveGas": "0"
     }
-    url1 = f"{base}/{chain.kyber_slug}/api/v1/routes"
-    code, text, headers = await _fetch_http("GET", url1, params=qs, timeout=int(app.settings.get("timeout_sec", 12)))
+    
+    # Get kyber_slug or fall back to chain name
+    chain_path = getattr(chain, "kyber_slug", None) or chain.name.lower()
+    
+    # Try routes endpoint first
+    url1 = f"{base}/{chain_path}/api/v1/routes"
+    code, text, headers = await _fetch_http("GET", url1, params=qs)
     if code == 200 and text:
         try:
             data = _safe_json_parse(text, where=f"kyber {url1}")
@@ -358,6 +368,36 @@ async def kyber_quote(app: AppConfig, chain: Chain, sell_addr: str, buy_addr: st
             return {"ok": False, "adapter": "kyber", "err": str(e)}
     body = (text or text2 or "")[:200]
     return {"ok": False, "adapter": "kyber", "err": f"HTTP {code or code2}", "where": f"GET {url1} / {url2}", "body": body}
+
+async def odos_quote(app: AppConfig, chain: Chain, sell_addr: str, buy_addr: str, amount_wei: int) -> Dict[str, Any]:
+    base = app.api.get("odos_base", "https://api.odos.xyz").rstrip("/")
+    url = f"{base}/sor/quote/v2"
+    payload = {
+        "chainId": chain.id,  # Changed from chain.chain_id to chain.id
+        "inputTokens": [{"tokenAddress": sell_addr, "amount": str(amount_wei)}],
+        "outputTokens": [{"tokenAddress": buy_addr}],
+        "userAddr": app.api.get("odos_user_addr", "0x0000000000000000000000000000000000000001"),
+        "slippageLimitPercent": float(app.settings.get("slippage_limit_percent", 0.5)),
+        "compact": True
+    }
+    code, text, headers = await _fetch_http("POST", url, json_body=payload, timeout=int(app.settings.get("timeout_sec", 12)))
+    if code != 200:
+        return {"ok": False, "adapter": "odos", "err": f"HTTP {code}", "where": f"POST {url}", "body": (text or "")[:200]}
+    try:
+        data = _safe_json_parse(text, where=f"odos {url}")
+    except Exception as e:
+        return {"ok": False, "adapter": "odos", "err": str(e)}
+    out_amt = None
+    if isinstance(data, dict):
+        if "outAmounts" in data and isinstance(data["outAmounts"], list) and data["outAmounts"]:
+            out_amt = int(data["outAmounts"][0])
+        elif "outAmount" in data:
+            out_amt = int(data["outAmount"])
+        elif "outputTokens" in data and data["outputTokens"] and "amount" in data["outputTokens"][0]:
+            out_amt = int(data["outputTokens"][0]["amount"])
+    if out_amt is None:
+        return {"ok": False, "adapter": "odos", "err": "missing outAmount", "data_keys": list(data.keys())}
+    return {"ok": True, "adapter": "odos", "out_wei": out_amt, "raw": data}
 
 async def quote_basic_leg(app, chain, a_sym, b_sym, base_in: float) -> "LegQuote":
     """Get basic quote from adapters for a token pair on a single chain.
@@ -561,7 +601,9 @@ async def run_one_leg_mode(app: AppConfig, pair_spec: str, out_html: str, refres
                 a_sym, b_sym = [x.strip().upper() for x in pair.split(">")]
             
             # 获取链配置
-            chain = app.chains[chain_name.lower()]
+            chain = find_chain(app.chains, chain_name)
+            if not chain:
+                raise ValueError(f"Chain not found: {chain_name}")
             
             # 获取报价
             leg = await quote_basic_leg(app, chain, a_sym, b_sym, 1000)  # 使用1000作为基础数量
@@ -607,8 +649,12 @@ async def run_two_leg_mode(app: AppConfig, pair_spec: str, out_html: str, refres
                 break
 
             # 获取链配置
-            ci = app.chains[ci_name.lower()]
-            cj = app.chains[cj_name.lower()]
+            ci = find_chain(app.chains, ci_name)
+            cj = find_chain(app.chains, cj_name)
+            
+            if not ci or not cj:
+                raise ValueError(f"Chain not found: {ci_name} or {cj_name}")
+            
             DBG.info(f"[CHECK] Got chain configs: {ci.name} and {cj.name}")
             
             # 使用初始数量查询报价（默认1000）
@@ -737,7 +783,7 @@ def _render_page(title: str, refresh: int, rows: List[dict], debug_html: str = "
         body_html = "<div style='color:#64748b'>No available quotes right now.</div>"
 
     css = """
-    body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft Yahei';margin:20px;color:#0f172a}
+    body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft YaHei';margin:20px;color:#0f172a}
     .t{border-collapse:collapse;width:100%} .t th,.t td{border:1px solid #e2e8f0;padding:8px}
     .t th{text-align:left;background:#f8fafc}
     """

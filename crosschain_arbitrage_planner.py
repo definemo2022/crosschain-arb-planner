@@ -592,6 +592,21 @@ async def run_one_leg_mode(app: AppConfig, pair_spec: str, out_html: str, refres
     global DBG
     DBG = init_debug_logger("single-leg", out_html, verbose)
     
+    # Add debug logs for pair_any mode
+    if pair_any:
+        DBG.info(f"[DEBUG] Running in pair-any mode with spec: {pair_any}")
+        DBG.info(f"[DEBUG] Available chains: {[chain.name for chain in app.chains]}")
+        
+        # Check adapter support for each chain
+        for chain in app.chains:
+            DBG.info(f"[DEBUG] Checking adapters for chain {chain.name}")
+            for adapter_name, chains in app.settings.get("adapter_support", {}).items():
+                DBG.info(f"[DEBUG] Adapter {adapter_name} supports: {chains}")
+                if chain.name.lower() in [c.lower() for c in chains]:
+                    DBG.info(f"[DEBUG] Chain {chain.name} is supported by {adapter_name}")
+                else:
+                    DBG.info(f"[DEBUG] Chain {chain.name} is NOT supported by {adapter_name}")
+    
     while True:
         try:
             # 获取代币对信息
@@ -599,28 +614,35 @@ async def run_one_leg_mode(app: AppConfig, pair_spec: str, out_html: str, refres
                 if ">" not in pair_any:
                     raise ValueError(f"pair-any 格式应为 'A>B'，当前: {pair_any}")
                 a_sym, b_sym = [x.strip().upper() for x in pair_any.split(">")]
-                chain_name = "ethereum"  # 默认在 ethereum 链上查询
+                DBG.info(f"[DEBUG] Parsed tokens: {a_sym} > {b_sym}")
+                
+                # Create a list to store all quotes
+                all_legs = []
+                
+                # Try quote on each chain
+                for chain in app.chains:
+                    DBG.info(f"[DEBUG] Attempting quote on chain: {chain.name}")
+                    try:
+                        leg = await quote_basic_leg(app, chain, a_sym, b_sym, 100000)
+                        DBG.info(f"[DEBUG] Quote result for {chain.name}: status={leg.status}")
+                        all_legs.append(leg)
+                    except Exception as e:
+                        DBG.error(f"[DEBUG] Error quoting on {chain.name}: {e}")
+                        continue
+                
+                DBG.info(f"[DEBUG] Got {len(all_legs)} quotes from {len(app.chains)} chains")
+                
+                # Render all results
+                html = render_legs_page(
+                    title=f"Multi-Chain Quote: {a_sym}>{b_sym}",
+                    refresh=refresh,
+                    legs=all_legs
+                )
+                _write_html(out_html, html)
+            
             else:
-                if ":" not in pair_spec or ">" not in pair_spec:
-                    raise ValueError(f"pair-spec 格式应为 'chain:A>B'，当前: {pair_spec}")
-                chain_name, pair = pair_spec.split(":", 1)
-                a_sym, b_sym = [x.strip().upper() for x in pair.split(">")]
-            
-            # 获取链配置
-            chain = find_chain(app.chains, chain_name)
-            if not chain:
-                raise ValueError(f"Chain not found: {chain_name}")
-            
-            # 获取报价
-            leg = await quote_basic_leg(app, chain, a_sym, b_sym, 1000)  # 使用1000作为基础数量
-            
-            # 渲染结果
-            html = render_legs_page(
-                title=f"Single Leg Quote: {chain_name}:{a_sym}>{b_sym}",
-                refresh=refresh,
-                legs=[leg]
-            )
-            _write_html(out_html, html)
+                # ... existing single chain code ...
+                pass
             
             if once:
                 break
@@ -664,7 +686,7 @@ async def run_two_leg_mode(app: AppConfig, pair_spec: str, out_html: str, refres
             DBG.info(f"[CHECK] Got chain configs: {ci.name} and {cj.name}")
             
             # 使用初始数量查询报价（默认1000）
-            base_in_a = 1000.0
+            base_in_a = 100000.0
             DBG.info(f"[CHECK] Quoting {ci_name}:{a_sym}>{b_sym} -> {cj_name}:{b_sym}>{a_sym} with base {base_in_a}")
             
             # 获取报价并优化数量

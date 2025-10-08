@@ -4,9 +4,13 @@ import asyncio
 from typing import Optional, Callable, Dict, Any, List
 from leg_quote import LegQuote, LEG_OK, LEG_NO_ADDR, LEG_NO_QUOTE, LEG_ERROR
 from assets import Token
+from logger_utils import NullLogger
 import json
-# callable 签名：await fn(app, chain, in_addr, out_addr, in_wei) -> 任意(raw)
+# callable 签名：await fn(app, chain, in_addr, out_ad
+# dr, in_wei) -> 任意(raw)
 QuoteFn = Callable[[Any, Any, str, str, int], Any]
+
+logger = NullLogger()
 
 class BaseAdapter:
     """
@@ -21,6 +25,9 @@ class BaseAdapter:
     def __init__(self, app: Any, quote_fn: Optional[QuoteFn] = None):
         self.app = app
         self.quote_fn = quote_fn
+        # Get logger from app if available
+        global logger
+        logger = getattr(app, 'logger', NullLogger())
 
     async def _fetch_http(self, method: str, url: str, *, headers=None, params=None, json_body=None, timeout=12):
         """HTTP 请求封装，统一处理异常"""
@@ -160,6 +167,9 @@ class KyberAdapter(BaseAdapter):
                    a_token: Optional[Token] = None, b_token: Optional[Token] = None) -> LegQuote:
         """Get quote from Kyber"""
         chain_name = getattr(chain, "name", "?")
+        
+        logger.info(f"[DEBUG] KyberAdapter input: base_in={base_in}, decimals={a_token.decimals if a_token else 'N/A'}")
+
         if not self.supports_chain(chain_name):
             return self._make_leg(chain_name, a_sym, b_sym, base_in, 
                                 self.name, 0, None, LEG_NO_QUOTE, "adapter disabled on chain",
@@ -172,6 +182,7 @@ class KyberAdapter(BaseAdapter):
 
         try:
             in_wei = int(float(base_in) * (10 ** a_token.decimals))
+            logger.info(f"[DEBUG] KyberAdapter in_wei: {in_wei}")
             
             # Original kyber_quote logic
             base = self.app.api.get("kyber_base", "https://aggregator-api.kyberswap.com").rstrip("/")
@@ -198,8 +209,12 @@ class KyberAdapter(BaseAdapter):
                         rs = d.get("routeSummary")
                         if isinstance(rs, dict) and "amountOut" in rs:
                             out_amt = int(rs["amountOut"])
+                            out_base = out_amt / (10 ** b_token.decimals)
+                            logger.info(f"[DEBUG] KyberAdapter routes output: out_wei={out_amt}, out_base={out_base}, decimals={b_token.decimals}")
                     if out_amt is None and "route" in data and "amountOut" in data["route"]:
                         out_amt = int(data["route"]["amountOut"])
+                        out_base = out_amt / (10 ** b_token.decimals)
+                        logger.info(f"[DEBUG] KyberAdapter route output: out_wei={out_amt}, out_base={out_base}, decimals={b_token.decimals}")
                     if out_amt is not None:
                         return self._make_leg(chain_name, a_sym, b_sym, base_in,
                                            self.name, out_amt, b_token.decimals, LEG_OK)
@@ -243,6 +258,10 @@ class OdosAdapter(BaseAdapter):
                    a_token: Optional[Token] = None, b_token: Optional[Token] = None) -> LegQuote:
         """Get quote from Odos"""
         chain_name = getattr(chain, "name", "?")
+        
+        logger.info(f"[DEBUG] OdosAdapter input: base_in={base_in}, decimals={a_token.decimals}")
+
+
         if not self.supports_chain(chain_name):
             return self._make_leg(chain_name, a_sym, b_sym, base_in,
                                 self.name, 0, None, LEG_NO_QUOTE, "adapter disabled on chain",
@@ -254,9 +273,11 @@ class OdosAdapter(BaseAdapter):
                                 a_token, b_token)
 
         try:
+            # Convert input amount to wei
             in_wei = int(float(base_in) * (10 ** a_token.decimals))
+            logger.info(f"[DEBUG] OdosAdapter in_wei: {in_wei}")
             
-            # Original odos_quote logic
+            # Prepare API request
             base = self.app.api.get("odos_base", "https://api.odos.xyz").rstrip("/")
             url = f"{base}/sor/quote/v2"
             payload = {
@@ -276,6 +297,8 @@ class OdosAdapter(BaseAdapter):
 
             data = self._safe_json_parse(text, where=f"odos {url}")
             out_amt = None
+            
+            # Parse response
             if isinstance(data, dict):
                 if "outAmounts" in data and isinstance(data["outAmounts"], list) and data["outAmounts"]:
                     out_amt = int(data["outAmounts"][0])
@@ -284,13 +307,16 @@ class OdosAdapter(BaseAdapter):
                 elif "outputTokens" in data and data["outputTokens"] and "amount" in data["outputTokens"][0]:
                     out_amt = int(data["outputTokens"][0]["amount"])
 
-            if out_amt is None:
+            if out_amt is not None:
+                # Add debug log for output amount
+                out_base = out_amt / (10 ** b_token.decimals)
+                logger.info(f"[DEBUG] OdosAdapter output: out_wei={out_amt}, out_base={out_base}, decimals={b_token.decimals}")
                 return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                    self.name, 0, None, LEG_NO_QUOTE,
-                                    "missing outAmount", a_token, b_token)
+                                    self.name, out_amt, b_token.decimals, LEG_OK)
 
             return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                self.name, out_amt, b_token.decimals, LEG_OK)
+                                self.name, 0, None, LEG_NO_QUOTE,
+                                "missing outAmount", a_token, b_token)
 
         except Exception as e:
             return self._make_leg(chain_name, a_sym, b_sym, base_in,

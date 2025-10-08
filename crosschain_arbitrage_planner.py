@@ -427,8 +427,9 @@ async def quote_basic_leg(app, chain, a_sym, b_sym, base_in: float) -> "LegQuote
     DBG.info(f"[DEBUG] A token: {a_token}")
     DBG.info(f"[DEBUG] B token: {b_token}")
     
+    # Check if both tokens exist on this chain
     if not a_token or not b_token:
-        msg = f"Token not found on {chain.name}"
+        msg = f"Token not available on {chain.name}: {a_sym if not a_token else b_sym}"
         DBG.error(f"[DEBUG] {msg}")
         return LegQuote(
             chain=chain.name,
@@ -440,20 +441,28 @@ async def quote_basic_leg(app, chain, a_sym, b_sym, base_in: float) -> "LegQuote
             out_wei=0,
             adapter="-",
             status=LEG_NO_ADDR,
-            note=msg
+            note=msg,
+            a_token=a_token,
+            b_token=b_token
         )
+    
+    # Now safe to access decimals
+    DBG.info(f"[DEBUG] A decimals: {a_token.decimals}")
+    DBG.info(f"[DEBUG] B decimals: {b_token.decimals}")
 
     # Convert input amount to wei
     in_wei = int(float(base_in) * (10 ** a_token.decimals))
+    DBG.info(f"[DEBUG] Input conversion: {base_in} -> {in_wei} wei (decimals={a_token.decimals})")
     
-    # 由主程序把现有函数指针注入适配器，避免循环 import
+    # Build adapters
     qmap = {
         "kyber": kyber_quote if "kyber_quote" in globals() else None,
         "odos":  odos_quote  if "odos_quote"  in globals() else None,
     }
     
     adapters = build_adapters(app, qmap)
-    # 交给聚合器并发对比，拿到标准 LegQuote
+    
+    # Get quote
     leg = await best_quote_leg(
         app=app,
         chain=chain,
@@ -464,6 +473,14 @@ async def quote_basic_leg(app, chain, a_sym, b_sym, base_in: float) -> "LegQuote
         a_token=a_token,
         b_token=b_token
     )
+    
+    # Add output conversion debugging
+    if leg.out_wei:
+        out_base = leg.out_wei / (10 ** b_token.decimals)
+        DBG.info(f"[DEBUG] Output conversion: {leg.out_wei} wei -> {out_base} (decimals={b_token.decimals})")
+        DBG.info(f"[DEBUG] Price impact: in={base_in} {a_sym}, out={out_base} {b_sym}")
+        if out_base > 100000:  # Add sanity check
+            DBG.warn(f"[DEBUG] WARNING: Output amount seems too large: {out_base} {b_sym}")
     
     return leg
 
@@ -668,20 +685,26 @@ async def run_one_leg_mode(app: AppConfig, pair_spec: str, out_html: str, refres
                 chain_name, tokens = pair_spec.split(":")
                 a_sym, b_sym = tokens.split(">")
                 
-                DBG.info(f"[DEBUG] Parsed spec - chain: {chain_name}, tokens: {a_sym}>{b_sym}")
+                # Add debug logs
+                DBG.info(f"[DEBUG] Processing pair: {chain_name}:{a_sym}>{b_sym}")
                 
-                # 获取链对象
+                # Get chain
                 chain = CHAINS.get_chain(chain_name)
                 if not chain:
                     raise ValueError(f"Chain not found: {chain_name}")
                 DBG.info(f"[DEBUG] Found chain: {chain.name}")
                 
-                # 获取报价
-                DBG.info(f"[DEBUG] Getting quote for {a_sym}>{b_sym} on {chain.name}")
+                # Get quote with debug info
+                DBG.info(f"[DEBUG] Calling quote_basic_leg with base_in=1000")
                 leg = await quote_basic_leg(app, chain, a_sym, b_sym, 1000)
-                DBG.info(f"[DEBUG] Quote result: status={leg.status}, note={leg.note}")
+                DBG.info(f"[DEBUG] Got leg quote: status={leg.status}, adapter={leg.adapter}")
+                DBG.info(f"[DEBUG] Quote details: in={leg.base_in}, out={leg.out_b}, out_wei={leg.out_wei}")
                 
-                # 渲染结果
+                if leg.a_token and leg.b_token:
+                    DBG.info(f"[DEBUG] Token A decimals: {leg.a_token.decimals}")
+                    DBG.info(f"[DEBUG] Token B decimals: {leg.b_token.decimals}")
+                
+                # Render result
                 html = render_legs_page(
                     title=f"Single Leg Quote: {pair_spec}",
                     refresh=refresh,

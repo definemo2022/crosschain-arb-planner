@@ -109,116 +109,172 @@
     {
       "name": "hyperevm",
       "chain_id": 999
+    },
+    {
+      "name": "xlayer",
+      "chain_id": 196
+    },
+    {
+      "name": "etherlink",
+      "chain_id": 42793 ,
+      "kyber_slug": "etherlink"
     }
   ],
   "assets": [
     {
-      "symbol": "USDT",
-      "decimals": 6,
-      "address": {
-        "ethereum": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-        "arbitrum": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-        "optimism": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
-        "avalanche": "0x9702230A8Ea53601F5CD2dc00fDbc13d4dF4A8c7",
-        "kava": "0x919C1c267BC06a7039e03fCc2eF738525769109c",
-        "celo": "0x48065fbBE25f71C9282ddF5E1cD6D6A887483D5e",
-        "kaia": "0xd077a400968890eaCc75cDC901F0356C943e4FDb",
-        "plasma": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb",
-        "sonic": "0x6047828dc181963ba44974801FF68e538dA5eaF9",
-        "hyperevm": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb",
-        "polygon":"0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
-        
-      }
+      "name": "USDT",
+      "variants": [
+        {
+          "name": "USDT",
+          "decimals": 6,
+          "tokens": {
+            "ethereum": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+            "arbitrum": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+            "optimism": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
+            "avalanche": "0x9702230A8Ea53601F5CD2dc00fDbc13d4dF4A8c7",
+            "kava": "0x919C1c267BC06a7039e03fCc2eF738525769109c",
+            "celo": "0x48065fbBE25f71C9282ddF5E1cD6D6A887483D5e",
+            "kaia": "0xd077a400968890eaCc75cDC901F0356C943e4FDb",
+            "plasma": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb",
+            "sonic": "0x6047828dc181963ba44974801FF68e538dA5eaF9",
+            "hyperevm": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb",
+            "mantle": "0x201EBa5CC46D216Ce6DC03F6a759e8E766e956aE",
+            "etherlink":"0x2C03058C8AFC06713be23e58D2febC8337dbfE6A"
+          }
+        },
+        {
+          "name":"USDT0",
+          "decimals": 6,
+          "tokens": {
+            "arbitrum":"0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+            "polygon":"0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+            "berachain":"0x779Ded0c9e1022225f8E0630b35a9b54bE713736",
+            "ink":"0x0200C29006150606B650577BBE7B6248F58470c1",
+            "optimism":"0x01bFF41798a0BcF287b996046Ca68b395DbC1071",
+            "unichain":"0x9151434b16b9763660705744891fA906F660EcC5",
+            "xlayer":"0x779ded0c9e1022225f8e0630b35a9b54be713736"
+          }
+        }
+      ]
     },
     {
-      "symbol": "USDC",
-      "decimals": 6,
-      "address": {
-        "ethereum": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-        "arbitrum": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
-        "optimism": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
-        "avalanche": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
-        "sonic": "0x29219dd400f2Bf60E5a23d13Be72B486D4038894",
-        "polygon": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-        "base": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-        "linea": "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",
-        "hyperevm": "0xb88339CB7199b77E23DB6E890353E22632Ba630f"
-      }
+      "name": "USDC",
+      "variants": [
+        {
+          "name": "USDC",
+          "decimals": 6,
+          "tokens": {
+            "ethereum": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "arbitrum": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+            "optimism": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+            "avalanche": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+            "polygon": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+            "base": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "linea": "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",
+            "hyperevm": "0xb88339CB7199b77E23DB6E890353E22632Ba630f",
+            "bnb":"0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+            "unichain":"0x078D782b760474a361dDA0AF3839290b0EF57AD6",
+            "mantle":"0x09Bc4E0D864854c6aFB6eB9A9cdF58aC190D0dF9",
+            "etherlink":"0x796Ea11Fa2dD751eD01b53C372fFDB4AAa8f00F9"
+          }
+        },
+        {
+          "name":"USDC.e",
+          "decimals": 6,
+          "tokens": {
+            "arbitrum": "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8",
+            "optimism": "0x7F5c764cBc14f9669B88837ca1490cCa17c31607",
+            "avalanche": "0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664",
+            "sonic": "0x29219dd400f2Bf60E5a23d13Be72B486D4038894",
+            "polygon": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+            "berachain":"0x549943e04f40284185054145c6E4e9568C1D3241"
+          }
+        }
+      ]
     },
     {
-      "symbol": "USDE",
-      "decimals": 18,
-      "address": {
-        "ethereum": "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3",
-        "plasma": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "fraxtal": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "arbitrum": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "optimism": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "base": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "bnb": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "linea": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "manta": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "scroll": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "mode": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "xlayer": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "metis": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "kava": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "morph": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "swell": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "mantle": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "blast": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "berachain": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
-        "hyperevm": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34"
-      }
+      "name": "USDE",
+      "variants": [
+        {
+          "name": "USDE",
+          "decimals": 18,
+          "tokens": {
+            "ethereum": "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3",
+            "plasma": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "fraxtal": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "arbitrum": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "optimism": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "base": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "bnb": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "linea": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "manta": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "scroll": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "mode": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "xlayer": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "metis": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "kava": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "morph": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "swell": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "mantle": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "blast": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "berachain": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
+            "hyperevm": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34"
+          }
+        },
+        {
+          "name": "sUSDe",
+          "decimals": 18,
+          "tokens": {
+            "ethereum": "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497",
+            "arbitrum": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "optimism": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "base": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "bnb": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "linea": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "manta": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "scroll": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "fraxtal": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "mode": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "xlayer": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "metis": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "kava": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "morph": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "swell": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "mantle": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "blast": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "berachain": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "zircuit": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "zksync": "0xAD17Da2f6Ac76746EF261E835C50b2651ce36DA8",
+            "plasma": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2"
+          }
+        }
+      ]
     },
     {
-      "symbol": "sUSDe",
-      "decimals": 18,
-      "address": {
-        "ethereum": "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497",
-        "arbitrum": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "optimism": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "base":     "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "bnb":      "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "linea":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "manta":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "scroll":   "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "fraxtal":  "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "mode":     "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "xlayer":   "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "metis":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "kava":     "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "morph":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "swell":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "mantle":   "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "blast":    "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "berachain":"0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "zircuit":  "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
-        "zksync":   "0xAD17Da2f6Ac76746EF261E835C50b2651ce36DA8",
-        "plasma":   "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2"
-      }
-    },
-
-    {
-      "symbol": "FRXUSD",
-      "decimals": 18,
-      "address": {
-        "ethereum": "0xCAcd6fd266aF91b8AeD52aCCc382b4e165586E29",
-        "arbitrum": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
-        "optimism": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
-        "avalanche": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
-        "polygon": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
-        "fraxtal": "0xFc00000000000000000000000000000000000001",
-        "sonic": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
-        "base": "0xe5020A6d073a794B6E7f05678707dE47986Fb0b6",
-        "bnb": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
-        "linea": "0xC7346783f5e645aa998B106Ef9E7f499528673D8",
-        "scroll": "0x397F939C3b91A74C321ea7129396492bA9Cdce82",
-        "mode": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
-        "xlayer": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
-        "berachain": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
-        "unichain": "0x80Eede496655FB9047dd39d9f418d5483ED600df"
-      }
+      "name": "FRXUSD",
+      "variants": [
+        {
+          "name": "FRXUSD",
+          "decimals": 18,
+          "tokens": {
+            "ethereum": "0xCAcd6fd266aF91b8AeD52aCCc382b4e165586E29",
+            "arbitrum": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+            "optimism": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+            "avalanche": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+            "polygon": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+            "fraxtal": "0xFc00000000000000000000000000000000000001",
+            "sonic": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+            "base": "0xe5020A6d073a794B6E7f05678707dE47986Fb0b6",
+            "bnb": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+            "linea": "0xC7346783f5e645aa998B106Ef9E7f499528673D8",
+            "scroll": "0x397F939C3b91A74C321ea7129396492bA9Cdce82",
+            "mode": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+            "xlayer": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+            "berachain": "0x80Eede496655FB9047dd39d9f418d5483ED600df",
+            "unichain": "0x80Eede496655FB9047dd39d9f418d5483ED600df"
+          }
+        }
+      ]
     }
   ],
   "settings": {
@@ -247,7 +303,12 @@
         "berachain",
         "base",
         "polygon",
-        "linea"
+        "linea",
+        "etherlink",
+        "unichain",
+        "mantle",
+        "berachain",
+        "hyperevm"
       ],
       "odos": [
         "ethereum",

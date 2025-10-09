@@ -1,16 +1,44 @@
 [
   {
     "A_chain": "arbitrum",
-    "B_chain": "ethereum",
-    "A": "usdt",
-    "B": "usde",
-    "base": 5000
+    "B_chain": "plasma",
+    "A": "USDAI",
+    "B": "USDT0",
+    "base": 10000.0
   },
   {
-    "A_chain": "base",
-    "B_chain": "arbitrum",
-    "A": "USDC",
+    "A_chain": "arbitrum",
+    "B_chain": "plasma",
+    "A": "USDT",
+    "B": "USDAI",
+    "base": 10000.0
+  },
+  {
+    "A_chain": "ethereum",
+    "B_chain": "plasma",
+    "A": "USDT",
+    "B": "USDE",
+    "base": 10000.0
+  },
+  {
+    "A_chain": "ethereum",
+    "B_chain": "plasma",
+    "A": "USDE",
+    "B": "USDT0",
+    "base": 10000.0
+  },
+  {
+    "A_chain": "ethereum",
+    "B_chain": "plasma",
+    "A": "SUSDE",
+    "B": "USDT0",
+    "base": 10000.0
+  },
+  {
+    "A_chain": "ethereum",
+    "B_chain": "plasma",
+    "A": "USDT",
     "B": "SUSDE",
-    "base": 10000
+    "base": 10000.0
   }
 ]

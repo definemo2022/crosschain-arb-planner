@@ -107,6 +107,10 @@
       "chain_id": 130
     },
     {
+      "name": "ink",
+      "chain_id": 57073 
+    },
+    {
       "name": "hyperevm",
       "chain_id": 999
     },
@@ -135,7 +139,6 @@
             "kava": "0x919C1c267BC06a7039e03fCc2eF738525769109c",
             "celo": "0x48065fbBE25f71C9282ddF5E1cD6D6A887483D5e",
             "kaia": "0xd077a400968890eaCc75cDC901F0356C943e4FDb",
-            "plasma": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb",
             "sonic": "0x6047828dc181963ba44974801FF68e538dA5eaF9",
             "hyperevm": "0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb",
             "mantle": "0x201EBa5CC46D216Ce6DC03F6a759e8E766e956aE",
@@ -152,7 +155,8 @@
             "ink":"0x0200C29006150606B650577BBE7B6248F58470c1",
             "optimism":"0x01bFF41798a0BcF287b996046Ca68b395DbC1071",
             "unichain":"0x9151434b16b9763660705744891fA906F660EcC5",
-            "xlayer":"0x779ded0c9e1022225f8e0630b35a9b54be713736"
+            "xlayer":"0x779ded0c9e1022225f8e0630b35a9b54be713736",
+            "plasma":"0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb"
           }
         }
       ]
@@ -175,7 +179,8 @@
             "bnb":"0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
             "unichain":"0x078D782b760474a361dDA0AF3839290b0EF57AD6",
             "mantle":"0x09Bc4E0D864854c6aFB6eB9A9cdF58aC190D0dF9",
-            "etherlink":"0x796Ea11Fa2dD751eD01b53C372fFDB4AAa8f00F9"
+            "etherlink":"0x796Ea11Fa2dD751eD01b53C372fFDB4AAa8f00F9",
+            "ink":"0x2d270e6886d130d724215a266106e6832161eaed"
           }
         },
         {
@@ -220,11 +225,16 @@
             "berachain": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34",
             "hyperevm": "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34"
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "SUSDE",
+      "variants":[
         {
-          "name": "sUSDe",
-          "decimals": 18,
-          "tokens": {
+          "name":"SUSDE",
+          "decimals":18,
+          "tokens":{
             "ethereum": "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497",
             "arbitrum": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
             "optimism": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
@@ -245,10 +255,11 @@
             "berachain": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
             "zircuit": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
             "zksync": "0xAD17Da2f6Ac76746EF261E835C50b2651ce36DA8",
-            "plasma": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2"
+            "plasma": "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2",
+            "avalanche":"0x211cc4dd073734da055fbf44a2b4667d5e5fe5d2"
           }
         }
-      ]
+      ]            
     },
     {
       "name": "FRXUSD",
@@ -275,6 +286,106 @@
           }
         }
       ]
+    },
+    {
+      "name":"SFRXUSD",
+      "variants":[
+        {
+          "name":"SFRXUSD",
+          "decimals":18,
+          "tokens":{
+            "ethereum":"0xcf62F905562626CfcDD2261162a51fd02Fc9c5b6",
+            "arbitrum":"0x5Bff88cA1442c2496f7E475E9e7786383Bc070c0",
+            "optimism":"0x5Bff88cA1442c2496f7E475E9e7786383Bc070c0",
+            "bnb":"0x5Bff88cA1442c2496f7E475E9e7786383Bc070c0",
+            "polygon":"0x5Bff88cA1442c2496f7E475E9e7786383Bc070c0",
+            "sonic":"0x5Bff88cA1442c2496f7E475E9e7786383Bc070c0",
+            "berachain":"0x5Bff88cA1442c2496f7E475E9e7786383Bc070c0",
+            "fraxtal":"0xfc00000000000000000000000000000000000008"
+          }
+        }
+      ]
+    },
+    {
+      "name":"FRXETH",
+      "variants":[{
+        "name":"FRXETH",
+        "decimals":18,
+        "tokens":{
+          "ethereum":"0x5E8422345238F34275888049021821E8E08CAa1f",
+          "fraxtal":"0xFC00000000000000000000000000000000000006",
+          "sonic":"0x43eDD7f3831b08FE70B7555ddD373C8bF65a9050"
+        }
+      }]
+    },
+    {
+      "name":"SFRXETH",
+      "variants":[
+        {
+        "name":"SFRXETH",
+        "decimals":18,
+        "tokens":{
+          "ethereum":"0xac3E018457B222d93114458476f3E3416Abbe38F",
+          "fraxtal":"0xFC00000000000000000000000000000000000005",
+          "sonic":"0x3Ec3849C33291a9eF4c5dB86De593EB4A37fDe45"
+          }
+        }
+      ]
+    },
+    {
+      "name":"GHO",
+      "variants":[
+        {
+        "name":"GHO",
+        "decimals":18,
+        "tokens":{
+          "ethereum":"0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f",
+          "avalanche":"0xfc421aD3C883Bf9E7C4f42dE845C4e4405799e73",
+          "base":"0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee"
+          }
+        }
+      ]
+    },
+    {
+      "name":"USDAI",
+      "variants":[
+        {
+        "name":"USDAI",
+        "decimals":18,
+        "tokens":{
+          "arbitrum":"0x0A1a1A107E45b7Ced86833863f482BC5f4ed82EF",
+          "plasma":"0x0A1a1A107E45b7Ced86833863f482BC5f4ed82EF"
+          }
+        }
+      ]
+    },
+    {
+      "name":"SUSDS",
+      "variants":[
+        {
+        "name":"SUSDS",
+        "decimals":18,
+        "tokens":{
+          "base":"0x5875eee11cf8398102fdad704c9e96607675467a",
+          "arbitrum":"0xddb46999f8891663a8f2828d25298f70416d7610",
+          "optimism":"0xb5b2dc7fd34c249f4be7fb1fcea07950784229e0"
+          }
+        }
+      ]
+    }
+    ,
+    {
+      "name":"USDP",
+      "variants":[
+        {
+        "name":"USDP",
+        "decimals":18,
+        "tokens":{
+          "base":"0x76a9a0062ec6712b99b4f63bd2b4270185759dd5",
+          "sonic":"0x08417cdb7f52a5021bb4eb6e0deaf3f295c3f182"
+          }
+        }
+      ]
     }
   ],
   "settings": {
@@ -283,9 +394,7 @@
       10000
     ],
     "slippage_limit_percent": 0.5,
-    "timeout_sec": 12,
-    "retries": 1,
-    "soft_timeout_sec": 5,
+    
     "base_assets": [
       "USDT",
       "USDC"
@@ -335,6 +444,15 @@
     "size_opt_max_grows": 12,
     "size_opt_max_iter": 32,
     "size_opt_max_evals": 120,
-    "size_opt_integer": false
+    "size_opt_integer": false,
+
+    "run_mode":"two-leg",
+
+    "retries": 1,
+    "timeout_sec": 60,
+    "soft_timeout_sec": 8,
+    "quote_timeout_sec": 20,
+    "optimize_timeout_sec": 20,
+    "optimize_batch_size": 5
   }
 }

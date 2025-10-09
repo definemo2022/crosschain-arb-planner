@@ -8,6 +8,7 @@ class Chain:
     name: str
     id: int
     aliases: List[str]  # 别名列表，如 bsc/bnb, eth/ethereum 等
+    kyber_slug: Optional[str] = None
     
     def matches(self, name_or_alias: str) -> bool:
         """检查名称或别名是否匹配"""

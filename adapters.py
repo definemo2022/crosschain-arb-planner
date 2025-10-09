@@ -2,15 +2,19 @@
 from __future__ import annotations
 import asyncio
 from typing import Optional, Callable, Dict, Any, List
+from appconfig import AppConfig
 from leg_quote import LegQuote, LEG_OK, LEG_NO_ADDR, LEG_NO_QUOTE, LEG_ERROR
 from assets import Token
 from logger_utils import NullLogger
 import json
+
 # callable 签名：await fn(app, chain, in_addr, out_ad
 # dr, in_wei) -> 任意(raw)
 QuoteFn = Callable[[Any, Any, str, str, int], Any]
 
 logger = NullLogger()
+
+
 
 class BaseAdapter:
     """
@@ -20,7 +24,7 @@ class BaseAdapter:
       - supports_chain(): 可由 settings.adapter_support[name] 控制
       - quote(): 统一返回 LegQuote
     """
-    name: str = "base"
+    name: Optional[str] = None  # 适配器名，由子类覆盖
 
     def __init__(self, app: Any, quote_fn: Optional[QuoteFn] = None):
         self.app = app
@@ -63,8 +67,7 @@ class BaseAdapter:
         chain_name = (chain_name or "").lower()
         return chain_name in [c.lower() for c in allow]
 
-    async def quote(self, chain: Any, a_sym: str, b_sym: str, base_in: float,
-                   a_token: Optional[Token] = None, b_token: Optional[Token] = None) -> LegQuote:
+    async def quote(self, leg: LegQuote) -> LegQuote:
         """虚方法，由子类实现"""
         raise NotImplementedError("Subclass must implement quote()")
 
@@ -163,243 +166,140 @@ class BaseAdapter:
 class KyberAdapter(BaseAdapter):
     name = "kyber"
     
-    async def quote(self, chain: Any, a_sym: str, b_sym: str, base_in: float,
-                   a_token: Optional[Token] = None, b_token: Optional[Token] = None) -> LegQuote:
+    async def quote(self, leg: LegQuote) -> LegQuote:
         """Get quote from Kyber"""
-        chain_name = getattr(chain, "name", "?")
+        leg.adapter = self.name
         
-        logger.info(f"[DEBUG] KyberAdapter input: base_in={base_in}, decimals={a_token.decimals if a_token else 'N/A'}")
+        if not self.supports_chain(leg.chain.name):
+            leg.status = LEG_NO_QUOTE
+            leg.note = f"Adapter disabled on chain {leg.chain.name}"
+            return leg
 
-        if not self.supports_chain(chain_name):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in, 
-                                self.name, 0, None, LEG_NO_QUOTE, "adapter disabled on chain",
-                                a_token, b_token)
-
-        if not (a_token and b_token):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                self.name, 0, None, LEG_NO_ADDR, "missing token objects",
-                                a_token, b_token)
+        if not (leg.a and leg.b):
+            leg.status = LEG_NO_ADDR
+            leg.note = f"Missing token objects for {leg.a.name} or {leg.b.name}"
+            return leg
 
         try:
-            in_wei = int(float(base_in) * (10 ** a_token.decimals))
-            logger.info(f"[DEBUG] KyberAdapter in_wei: {in_wei}")
-            
-            # Original kyber_quote logic
             base = self.app.api.get("kyber_base", "https://aggregator-api.kyberswap.com").rstrip("/")
             qs = {
-                "tokenIn": a_token.address,
-                "tokenOut": b_token.address,
-                "amountIn": str(in_wei),
+                "tokenIn": leg.a.address,
+                "tokenOut": leg.b.address,
+                "amountIn": str(leg.in_wei),
                 "gasInclude": "1",
                 "saveGas": "0"
             }
             
-            # Get kyber_slug or fall back to chain name
-            chain_path = getattr(chain, "kyber_slug", None) or chain.name.lower()
+            chain_path = getattr(leg.chain, "kyber_slug", "") or leg.chain.name.lower()
+            url = f"{base}/{chain_path}/api/v1/routes"
             
-            # Try routes endpoint first
-            url1 = f"{base}/{chain_path}/api/v1/routes"
-            code, text, headers = await self._fetch_http("GET", url1, params=qs)
+            logger.info(f"[DEBUG] KyberAdapter querying: {url}")
+            logger.info(f"[DEBUG] KyberAdapter params: {qs}")
+            
+            code, text, headers = await self._fetch_http("GET", url, params=qs)
+            
             if code == 200 and text:
-                try:
-                    data = self._safe_json_parse(text, where=f"kyber {url1}")
-                    out_amt = None
-                    d = data.get("data") if isinstance(data, dict) else None
-                    if isinstance(d, dict):
-                        rs = d.get("routeSummary")
-                        if isinstance(rs, dict) and "amountOut" in rs:
-                            out_amt = int(rs["amountOut"])
-                            out_base = out_amt / (10 ** b_token.decimals)
-                            logger.info(f"[DEBUG] KyberAdapter routes output: out_wei={out_amt}, out_base={out_base}, decimals={b_token.decimals}")
-                    if out_amt is None and "route" in data and "amountOut" in data["route"]:
-                        out_amt = int(data["route"]["amountOut"])
-                        out_base = out_amt / (10 ** b_token.decimals)
-                        logger.info(f"[DEBUG] KyberAdapter route output: out_wei={out_amt}, out_base={out_base}, decimals={b_token.decimals}")
-                    if out_amt is not None:
-                        return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                           self.name, out_amt, b_token.decimals, LEG_OK)
-                except Exception:
-                    pass
-
-            # Try fallback endpoint
-            url2 = f"{base}/{chain_path}/api/v1/route"
-            code2, text2, _ = await self._fetch_http("GET", url2, params=qs)
-            if code2 == 200 and text2:
-                try:
-                    data2 = self._safe_json_parse(text2, where=f"kyber {url2}")
-                    out_amt = None
-                    d2 = data2.get("data") if isinstance(data2, dict) else None
-                    if isinstance(d2, dict) and "routeSummary" in d2 and "amountOut" in d2["routeSummary"]:
-                        out_amt = int(d2["routeSummary"]["amountOut"])
-                    if out_amt is None and "route" in data2 and "amountOut" in data2["route"]:
-                        out_amt = int(data2["route"]["amountOut"])
-                    if out_amt is not None:
-                        return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                           self.name, out_amt, b_token.decimals, LEG_OK)
-                except Exception as e:
-                    return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                        self.name, 0, None, LEG_ERROR, str(e),
-                                        a_token, b_token)
-
-            body = (text or text2 or "")[:200]
-            return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                self.name, 0, None, LEG_NO_QUOTE,
-                                f"HTTP {code or code2}", a_token, b_token)
+                data = self._safe_json_parse(text, where=f"kyber {url}")
+                logger.info(f"[DEBUG] KyberAdapter response: {data}")
+                
+                if data.get("code") == 0 and "data" in data:
+                    route_summary = data["data"].get("routeSummary", {})
+                    if "amountOut" in route_summary:
+                        out_amt = int(route_summary["amountOut"])
+                        out_base = out_amt / (10 ** leg.b.decimals)
+                        logger.info(f"[DEBUG] KyberAdapter quote: {out_amt} wei -> {out_base} {leg.b.name}")
+                        
+                        leg.out_wei = out_amt
+                        leg.out_b = out_base
+                        leg.status = LEG_OK
+                        return leg
+            
+            leg.status = LEG_NO_QUOTE
+            leg.note = f"No valid quote received (HTTP {code})"
+            return leg
 
         except Exception as e:
-            return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                self.name, 0, None, LEG_ERROR, str(e),
-                                a_token, b_token)
+            logger.error(f"[ERROR] KyberAdapter error: {str(e)}")
+            leg.status = LEG_ERROR
+            leg.note = str(e)
+            return leg
 
 class OdosAdapter(BaseAdapter):
     name = "odos"
     
-    async def quote(self, chain: Any, a_sym: str, b_sym: str, base_in: float,
-                   a_token: Optional[Token] = None, b_token: Optional[Token] = None) -> LegQuote:
+    async def quote(self, leg: LegQuote) -> LegQuote:
         """Get quote from Odos"""
-        chain_name = getattr(chain, "name", "?")
+        leg.adapter = self.name
         
-        logger.info(f"[DEBUG] OdosAdapter input: base_in={base_in}, decimals={a_token.decimals}")
+        if not self.supports_chain(leg.chain.name):
+            leg.status = LEG_NO_QUOTE
+            leg.note = f"Adapter disabled on chain {leg.chain.name}"
+            return leg
 
-
-        if not self.supports_chain(chain_name):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                self.name, 0, None, LEG_NO_QUOTE, "adapter disabled on chain",
-                                a_token, b_token)
-
-        if not (a_token and b_token):
-            return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                self.name, 0, None, LEG_NO_ADDR, "missing token objects",
-                                a_token, b_token)
+        if not (leg.a and leg.b):
+            leg.status = LEG_NO_ADDR
+            leg.note = f"Missing token objects for {leg.a.name} or {leg.b.name}"
+            return leg
 
         try:
-            # Convert input amount to wei
-            in_wei = int(float(base_in) * (10 ** a_token.decimals))
-            logger.info(f"[DEBUG] OdosAdapter in_wei: {in_wei}")
+            # Remove redundant conversion since in_wei is already set
+            logger.info(f"[DEBUG] OdosAdapter using in_wei: {leg.in_wei}")
             
             # Prepare API request
             base = self.app.api.get("odos_base", "https://api.odos.xyz").rstrip("/")
             url = f"{base}/sor/quote/v2"
+            
             payload = {
-                "chainId": chain.id,
-                "inputTokens": [{"tokenAddress": a_token.address, "amount": str(in_wei)}],
-                "outputTokens": [{"tokenAddress": b_token.address}],
+                "chainId": leg.chain.id,
+                "inputTokens": [{"tokenAddress": leg.a.address, "amount": str(leg.in_wei)}],
+                "outputTokens": [{"tokenAddress": leg.b.address}],
                 "userAddr": self.app.api.get("odos_user_addr", "0x0000000000000000000000000000000000000001"),
                 "slippageLimitPercent": float(self.app.settings.get("slippage_limit_percent", 0.5)),
                 "compact": True
             }
             
-            code, text, _ = await self._fetch_http("POST", url, json_body=payload)
-            if code != 200:
-                return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                    self.name, 0, None, LEG_NO_QUOTE,
-                                    f"HTTP {code}", a_token, b_token)
-
-            data = self._safe_json_parse(text, where=f"odos {url}")
-            out_amt = None
+            logger.info(f"[DEBUG] OdosAdapter querying: {url}")
+            logger.info(f"[DEBUG] OdosAdapter payload: {payload}")
             
-            # Parse response
-            if isinstance(data, dict):
-                if "outAmounts" in data and isinstance(data["outAmounts"], list) and data["outAmounts"]:
-                    out_amt = int(data["outAmounts"][0])
-                elif "outAmount" in data:
-                    out_amt = int(data["outAmount"])
-                elif "outputTokens" in data and data["outputTokens"] and "amount" in data["outputTokens"][0]:
-                    out_amt = int(data["outputTokens"][0]["amount"])
+            code, text, _ = await self._fetch_http("POST", url, json_body=payload)
+            logger.info(f"[DEBUG] OdosAdapter response code: {code}")
+            logger.info(f"[DEBUG] OdosAdapter response text: {text[:200]}")
+            
+            if code == 200 and text:
+                data = self._safe_json_parse(text, where=f"odos {url}")
+                logger.info(f"[DEBUG] OdosAdapter parsed data: {json.dumps(data)[:200]}")
+                
+                out_amt = None
+                if isinstance(data, dict):
+                    # Try all possible paths for output amount
+                    if "outAmounts" in data and isinstance(data["outAmounts"], list) and data["outAmounts"]:
+                        out_amt = int(data["outAmounts"][0])
+                        logger.info(f"[DEBUG] Found amount in outAmounts: {out_amt}")
+                    elif "outAmount" in data:
+                        out_amt = int(data["outAmount"])
+                        logger.info(f"[DEBUG] Found amount in outAmount: {out_amt}")
+                    elif "outputTokens" in data and data["outputTokens"] and "amount" in data["outputTokens"][0]:
+                        out_amt = int(data["outputTokens"][0]["amount"])
+                        logger.info(f"[DEBUG] Found amount in outputTokens: {out_amt}")
 
-            if out_amt is not None:
-                # Add debug log for output amount
-                out_base = out_amt / (10 ** b_token.decimals)
-                logger.info(f"[DEBUG] OdosAdapter output: out_wei={out_amt}, out_base={out_base}, decimals={b_token.decimals}")
-                return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                    self.name, out_amt, b_token.decimals, LEG_OK)
-
-            return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                self.name, 0, None, LEG_NO_QUOTE,
-                                "missing outAmount", a_token, b_token)
+                if out_amt is not None:
+                    out_base = out_amt / (10 ** leg.b.decimals)
+                    logger.info(f"[DEBUG] OdosAdapter quote: {out_amt} wei -> {out_base} {leg.b.name}")
+                    
+                    leg.out_wei = out_amt
+                    leg.out_b = out_base
+                    leg.status = LEG_OK
+                    return leg
+                else:
+                    logger.error(f"[DEBUG] No output amount found in response")
+            
+            leg.status = LEG_NO_QUOTE
+            leg.note = f"No valid quote received (HTTP {code})"
+            return leg
 
         except Exception as e:
-            return self._make_leg(chain_name, a_sym, b_sym, base_in,
-                                self.name, 0, None, LEG_ERROR, str(e),
-                                a_token, b_token)
-
-
-# —— 构造与聚合 —— #
-
-def build_adapters(app: Any, quote_fns: Dict[str, Optional[QuoteFn]]):
-    """
-    从主程序注入的报价函数字典构建适配器列表。
-    例如：{"kyber": kyber_quote, "odos": odos_quote}
-    """
-    lst = []
-    if quote_fns.get("kyber") is not None:
-        lst.append(KyberAdapter(app, quote_fns.get("kyber")))
-    if quote_fns.get("odos") is not None:
-        lst.append(OdosAdapter(app, quote_fns.get("odos")))
-    return lst
-
-async def best_quote_leg(
-    app: Any,
-    chain: Any,
-    a_sym: str,
-    b_sym: str,
-    base_in: float,
-    adapters: List["BaseAdapter"],
-    a_token: Token,  # Added Token object parameter
-    b_token: Token   # Added Token object parameter
-) -> LegQuote:
-    """Get best quote from multiple adapters
-    
-    Args:
-        app: App config
-        chain: Chain object
-        a_sym: Token A symbol
-        b_sym: Token B symbol 
-        base_in: Input amount
-        adapters: List of adapter instances
-        a_token: Token A object
-        b_token: Token B object
-    """
-    if not adapters:
-        return LegQuote(
-            chain=chain.name,
-            a=a_sym,
-            b=b_sym,
-            base_in=base_in,
-            in_wei=None,
-            out_b=None,
-            out_wei=0,
-            adapter="-",
-            status=LEG_NO_QUOTE,
-            note="no adapters",
-            a_token=a_token,  # Add Token objects
-            b_token=b_token
-        )
-
-    # 并发查询所有适配器
-    quotes = await asyncio.gather(*[
-        a.quote(chain, a_sym, b_sym, base_in, a_token, b_token)
-        for a in adapters
-        if a.supports_chain(chain.name)
-    ])
-    
-    # 找出最佳报价
-    best = None
-    for q in quotes:
-        if q.status != LEG_OK:
-            continue
-        if not best or q.out_b > best.out_b:
-            best = q
-            
-    return best or LegQuote(
-        chain=chain.name,
-        a=a_sym,
-        b=b_sym,
-        base_in=base_in,
-        in_wei=None,
-        out_b=None,
-        out_wei=0,
-        adapter="-",
-        status=LEG_NO_QUOTE,
-        note="no quotes"
-    )
+            logger.error(f"[ERROR] OdosAdapter error: {str(e)}")
+            leg.status = LEG_ERROR
+            leg.note = str(e)
+            return leg
+          

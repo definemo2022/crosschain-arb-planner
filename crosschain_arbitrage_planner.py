@@ -30,29 +30,39 @@ ASSERTS: Optional[Assets] = None
 SETTINGS: Dict[str, Any] = {}
 
 ADAPTERS:List[BaseAdapter] = []
+FITTING_ADAPTERS:List[BaseAdapter] = []
 
 # ---- 基础资产：配置与 CLI 覆盖 ----
 CLI_BASE_ASSETS: set[str] = set()
 
 #创建全局变量 ADAPTERS ，只在main()执行一次
-def build_adapters(app: AppConfig):
-    ADAPTERS.append(KyberAdapter(app))
-    ADAPTERS.append(OdosAdapter(app))
+def build_adapters():
+    global FITTING_ADAPTERS
+    ADAPTERS.append(KyberAdapter(MAINCONFIG))
+    ADAPTERS.append(OdosAdapter(MAINCONFIG))
+    FITTING_ADAPTERS = ADAPTERS.copy() #one-leg 时使用全部适配器
 
 
 # 3. Helper functions
-async def best_quote_leg(leg : LegQuote ):
+def compare_best_leg(legs: List[LegQuote]) -> Optional[LegQuote]:
+    """比较多个 LegQuote，返回 out_b 最大且状态为 LEG_OK 的 LegQuote"""
+    best = None
+    for leg in legs:
+        if leg.status != LEG_OK:
+            continue
+        if not best or leg.out_b > best.out_b:
+            best = leg
+    return best
+
+
+async def quote_leg_from_adapters(leg : LegQuote ):
     """从多个适配器中选择最佳报价"""
     
     # Create tasks for each adapter
     tasks = []
-    for adapter in ADAPTERS :        
-        if adapter.supports_chain(leg.chain.name):
-            tasks.append((adapter.name, asyncio.create_task(adapter.quote(leg))))
-        else:
-            DBG.info(f"[DEBUG] Adapter {adapter.name} does not support chain {leg.chain.name}")
-            DBG.info(f"[DEBUG] Adapter {adapter.name} settings: {adapter.app.settings.get('adapter_support', {})}")
-    
+    for adapter in FITTING_ADAPTERS :        
+        tasks.append((adapter.name, asyncio.create_task(adapter.quote(leg))))
+
     if not tasks:
         DBG.error(f"[DEBUG] No adapters support chain {leg.chain.name}")
         leg.status = LEG_NO_QUOTE
@@ -63,7 +73,6 @@ async def best_quote_leg(leg : LegQuote ):
     quotes = []
     for adapter_name, task in tasks:
         try:
-            DBG.info(f"[DEBUG] Awaiting quote from {adapter_name}")
             quote = await task
             DBG.info(f"[DEBUG] Raw quote from {adapter_name}: {vars(quote)}")
             quotes.append(quote)
@@ -74,17 +83,7 @@ async def best_quote_leg(leg : LegQuote ):
     DBG.info(f"[DEBUG] Received {len(quotes)} quotes")
 
     # Find best quote
-    best = None
-    for quote in quotes:
-        DBG.info(f"[DEBUG] Processing quote - adapter: {quote.adapter}, status: {quote.status}, out_wei: {quote.out_wei}")
-        if quote.status != LEG_OK:
-            DBG.info(f"[DEBUG] Skipping quote - reason: {quote.note}")
-            continue
-            
-        if not best or quote.out_b > best.out_b:
-            best = quote
-            DBG.info(f"[DEBUG] New best quote from {quote.adapter}: {quote.out_b} {leg.b.name}")
-    
+    best = compare_best_leg(quotes)
     if best:
         DBG.info(f"[DEBUG] Selected best quote from {best.adapter}: {best.out_b} {leg.b.name}")
         return best
@@ -144,7 +143,7 @@ def _safe_json_parse(resp_text: str, *, where: str) -> Any:
 def _from_wei(amount: int, decimals: int) -> float:
     return float(amount) / (10 ** decimals)
 
-def _parse_two_leg_spec(pair_spec: str):
+def parse_pair_spec(pair_spec: str):
     """
     解析形如: 'chainA:A>B,chainB:B>A'，返回 (ci_name, a_sym, b_sym, cj_name)
     """
@@ -193,8 +192,15 @@ def _skip_pair_by_base(base_set: set[str], a_sym: str, b_sym: str) -> bool:
     return not allow  # 返回 True=跳过
 
 
+def get_fitting_adapters(ci: Chain, cj: Chain) -> List[BaseAdapter]:
+    """获取同时支持 ci 和 cj 的适配器列表"""
+    fitting = []
+    for adapter in ADAPTERS:
+        if adapter.supports_chain(ci.name) and adapter.supports_chain(cj.name):
+            fitting.append(adapter)
+    return fitting
 
-async def _process_watchlist(pair: Dict) -> Optional[TwoLegResult]:
+async def process_watchlist(pair: Dict) -> Optional[TwoLegResult]:
     """处理单个 watchlist 对"""
     try:
         # Get chains
@@ -207,6 +213,10 @@ async def _process_watchlist(pair: Dict) -> Optional[TwoLegResult]:
             
         DBG.info(f"[WATCH] Processing {ci.name}:{pair['A']} > {cj.name}:{pair['B']}")
         
+
+
+
+
         # Get assets
         a_asset = ASSETS.get_asset(pair["A"])
         b_asset = ASSETS.get_asset(pair["B"])
@@ -245,7 +255,7 @@ async def _process_watchlist(pair: Dict) -> Optional[TwoLegResult]:
         DBG.info(f"[WATCH] Created two-leg quote: {ci.name}:{tokenA_i.name}>{tokenB_i.name} -> {cj.name}:{tokenB_j.name}>{tokenA_j.name}")
         
         # Get quotes
-        result = await quote_two_leg_once(twoleg)
+        result = await quote_optimize_two_leg(twoleg)
         DBG.info(f"[WATCH] Quote result: status={result.status}, pnl={result.pnl}")
         return result
         
@@ -276,6 +286,7 @@ def load_config(config_path: str) -> AppConfig  :
         SETTINGS = raw.get("settings", {})
         if not isinstance(SETTINGS, dict):
             SETTINGS = {}
+
 
         DBG.info(SETTINGS.get("run_mode","watchlist"))       
         DBG.info(f"[CONFIG] Loaded {len(SETTINGS)} settings")
@@ -318,105 +329,7 @@ def _load_watchlist_json(path: str) -> list[dict]:
 
     return norm_list
 
-async def _fetch_http(method: str, url: str, *, headers=None, params=None, json_body=None, timeout=12):
-    try:
-        import httpx
-        limits = httpx.Limits(max_keepalive_connections=16, max_connections=32)
-        async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-            if method.upper() == "GET":
-                r = await client.get(url, headers=headers, params=params)
-            else:
-                r = await client.post(url, headers=headers, params=params, json=json_body)
-            return r.status_code, r.text, dict(r.headers)
-    except Exception as e:
-        # 统一吞掉网络异常，返回“不可用”给上层
-        return -1, f"__EXC__:{type(e).__name__}:{str(e)[:180]}", {}
-
-'''
-async def kyber_quote(app: AppConfig, chain: Chain, sell_addr: str, buy_addr: str, amount_wei: int) -> Dict[str, Any]:
-    """Get quote from Kyber
-    
-    If chain.kyber_slug is not available, falls back to chain.name
-    """
-    base = app.api.get("kyber_base", "https://aggregator-api.kyberswap.com").rstrip("/")
-    qs = {
-        "tokenIn": sell_addr,
-        "tokenOut": buy_addr,
-        "amountIn": str(amount_wei),
-        "gasInclude": "1",
-        "saveGas": "0"
-    }
-    
-    # Get kyber_slug or fall back to chain name
-    chain_path = getattr(chain, "kyber_slug", None) or chain.name.lower()
-    
-    # Try routes endpoint first
-    url1 = f"{base}/{chain_path}/api/v1/routes"
-    code, text, headers = await _fetch_http("GET", url1, params=qs)
-    if code == 200 and text:
-        try:
-            data = _safe_json_parse(text, where=f"kyber {url1}")
-            out_amt = None
-            d = data.get("data") if isinstance(data, dict) else None
-            if isinstance(d, dict):
-                rs = d.get("routeSummary")
-                if isinstance(rs, dict) and "amountOut" in rs:
-                    out_amt = int(rs["amountOut"])
-            if out_amt is None and "route" in data and "amountOut" in data["route"]:
-                out_amt = int(data["route"]["amountOut"])
-            if out_amt is not None:
-                return {"ok": True, "adapter": "kyber", "out_wei": out_amt, "raw": data}
-        except Exception:
-            pass
-    url2 = f"{base}/{chain.kyber_slug}/api/v1/route"
-    code2, text2, headers2 = await _fetch_http("GET", url2, params=qs, timeout=int(SETTINGS.get("timeout_sec", 12)))
-    if code2 == 200 and text2:
-        try:
-            data2 = _safe_json_parse(text2, where=f"kyber {url2}")
-            out_amt = None
-            d2 = data2.get("data") if isinstance(data2, dict) else None
-            if isinstance(d2, dict) and "routeSummary" in d2 and "amountOut" in d2["routeSummary"]:
-                out_amt = int(d2["routeSummary"]["amountOut"])
-            if out_amt is None and "route" in data2 and "amountOut" in data2["route"]:
-                out_amt = int(data2["route"]["amountOut"])
-            if out_amt is not None:
-                return {"ok": True, "adapter": "kyber", "out_wei": out_amt, "raw": data2}
-        except Exception as e:
-            return {"ok": False, "adapter": "kyber", "err": str(e)}
-    body = (text or text2 or "")[:200]
-    return {"ok": False, "adapter": "kyber", "err": f"HTTP {code or code2}", "where": f"GET {url1} / {url2}", "body": body}
-
-async def odos_quote(app: AppConfig, chain: Chain, sell_addr: str, buy_addr: str, amount_wei: int) -> Dict[str, Any]:
-    base = app.api.get("odos_base", "https://api.odos.xyz").rstrip("/")
-    url = f"{base}/sor/quote/v2"
-    payload = {
-        "chainId": chain.id,  # Changed from chain.chain_id to chain.id
-        "inputTokens": [{"tokenAddress": sell_addr, "amount": str(amount_wei)}],
-        "outputTokens": [{"tokenAddress": buy_addr}],
-        "userAddr": app.api.get("odos_user_addr", "0x0000000000000000000000000000000000000001"),
-        "slippageLimitPercent": float(SETTINGS.get("slippage_limit_percent", 0.5)),
-        "compact": True
-    }
-    code, text, headers = await _fetch_http("POST", url, json_body=payload, timeout=int(SETTINGS.get("timeout_sec", 12)))
-    if code != 200:
-        return {"ok": False, "adapter": "odos", "err": f"HTTP {code}", "where": f"POST {url}", "body": (text or "")[:200]}
-    try:
-        data = _safe_json_parse(text, where=f"odos {url}")
-    except Exception as e:
-        return {"ok": False, "adapter": "odos", "err": str(e)}
-    out_amt = None
-    if isinstance(data, dict):
-        if "outAmounts" in data and isinstance(data["outAmounts"], list) and data["outAmounts"]:
-            out_amt = int(data["outAmounts"][0])
-        elif "outAmount" in data:
-            out_amt = int(data["outAmount"])
-        elif "outputTokens" in data and data["outputTokens"] and "amount" in data["outputTokens"][0]:
-            out_amt = int(data["outputTokens"][0]["amount"])
-    if out_amt is None:
-        return {"ok": False, "adapter": "odos", "err": "missing outAmount", "data_keys": list(data.keys())}
-    return {"ok": True, "adapter": "odos", "out_wei": out_amt, "raw": data}
-'''
-async def quote_basic_leg(leg: LegQuote) -> "LegQuote":
+async def quote_one_leg(leg: LegQuote) -> "LegQuote":
     """Get basic quote from adapters for a token pair on a single chain."""
     try:
         DBG.info(f"[DEBUG] quote_basic_leg start: {leg.a.name}>{leg.b.name} on {leg.chain.name}")
@@ -427,7 +340,7 @@ async def quote_basic_leg(leg: LegQuote) -> "LegQuote":
 
         # Get quote
         try:
-            await best_quote_leg(leg)
+            await quote_leg_from_adapters(leg)
             DBG.info(f"[DEBUG] Quote result: adapter={leg.adapter}, out_wei={leg.out_wei}, status={leg.status}")
         except Exception as quote_error:
             DBG.error(f"[DEBUG] Error in best_quote_leg: {str(quote_error)}")
@@ -453,11 +366,14 @@ async def quote_basic_leg(leg: LegQuote) -> "LegQuote":
         leg.note = f"General error: {str(e)}"
         return leg
 
-async def _quote_two_leg(twoleg: TwoLegResult) -> TwoLegResult:
+async def quote_two_leg_once(twoleg: TwoLegResult) -> TwoLegResult:
     """获取两条腿的报价"""
     try:
+        global FITTING_ADAPTERS
+        FITTING_ADAPTERS = get_fitting_adapters(twoleg.leg1.chain, twoleg.leg2.chain)   
+
         # 第一条腿: ci 上 A->B
-        await quote_basic_leg(twoleg.leg1)
+        await quote_one_leg(twoleg.leg1)
         if twoleg.leg1.status != LEG_OK:
             twoleg.leg1.note = f"Leg1 failed: {twoleg.leg1.note}"
             return twoleg
@@ -465,7 +381,7 @@ async def _quote_two_leg(twoleg: TwoLegResult) -> TwoLegResult:
         twoleg.leg2.base_in = twoleg.leg1.out_b
 
         # 第二条腿: cj 上 B->A
-        await quote_basic_leg(twoleg.leg2)
+        await quote_one_leg(twoleg.leg2)
         if twoleg.leg2.status != LEG_OK:
             twoleg.leg2.note = f"Leg2 failed: {twoleg.leg2.note}"
             return twoleg
@@ -485,14 +401,14 @@ async def _quote_two_leg(twoleg: TwoLegResult) -> TwoLegResult:
         return twoleg
         
 
-async def quote_two_leg_once(twoleg: TwoLegResult) -> TwoLegResult:
+async def quote_optimize_two_leg(twoleg: TwoLegResult) -> TwoLegResult:
     """Quote two legs with concurrent size testing"""
     try:
         global QUOTE_COUNTER, QUOTE_START_TIME
         QUOTE_START_TIME = time.time()
         
         # Get initial quote
-        result = await _quote_two_leg(twoleg)
+        result = await quote_two_leg_once(twoleg)
         DBG.info(f"[OPTIMIZE] Initial quote result: status={result.status}, pnl={result.pnl}")
         QUOTE_COUNTER += 1
         
@@ -520,7 +436,7 @@ async def quote_two_leg_once(twoleg: TwoLegResult) -> TwoLegResult:
                     base_in=0  # Will be set after leg1 quote
                 )
                 test_twoleg = TwoLegResult(new_leg1, new_leg2)
-                task = asyncio.create_task(_quote_two_leg(test_twoleg))
+                task = asyncio.create_task(quote_two_leg_once(test_twoleg))
                 tasks.append((new_leg1.base_in, task))
 
             try:
@@ -570,114 +486,148 @@ async def quote_two_leg_once(twoleg: TwoLegResult) -> TwoLegResult:
         result.status = LEG_ERROR
         result.note = f"Quote error: {str(e)} (Time: {elapsed:.2f}s)"
         return result
-
+    
 # 5. Mode functions
-async def run_one_leg_mode(pair_spec: str,  refresh: int, verbose: bool, once: bool, pair_any: str):
+def make_one_legs(pair_spec: str) -> List[LegQuote]:
+
+    #可以不指定链，必须指定TokenA和TokenB
+    if not pair_spec or ">" not in pair_spec:
+        raise ValueError(f"Invalid pair spec format: {pair_spec}")
+    
+    if ":" not in pair_spec:
+        chains=CHAINS
+        tokens=pair_spec
+    else:
+        chain_name, tokens = pair_spec.split(":")
+        chains=Chains([CHAINS.get_chain(chain_name)]) if CHAINS.get_chain(chain_name) else Chains([])
+    
+    a_sym, b_sym = tokens.split(">")
+
+    DBG.info(f"[DEBUG] Parsed pair-any tokens: {a_sym}>{b_sym}")
+
+    assetA = ASSETS.get_asset(a_sym)    
+    assetB = ASSETS.get_asset(b_sym)
+
+    base_in=SETTINGS.get("base_in")
+
+    if not assetA or not assetB:
+        raise ValueError(f"Asset not found: {a_sym} or {b_sym}") 
+
+
+    legs = []
+    for chain in chains:
+        tokenA = assetA.get_token(chain.name) if assetA else None
+        tokenB = assetB.get_token(chain.name) if assetB else None
+        if not tokenA or not tokenB:
+            DBG.info(f"[DEBUG] Token not found on chain {chain.name}: {a_sym} or {b_sym}, skip")
+            continue
+        leg = LegQuote(chain, tokenA, tokenB, base_in)
+        legs.append(leg)
+    return legs
+
+async def run_one_leg_mode(legs:List[LegQuote]):
+    
+    refresh=SETTINGS.get("refresh") 
+    verbose=SETTINGS.get("verbose")
+    once=SETTINGS.get("once") 
+    
     """运行单腿报价模式"""
     _ensure_dir(os.path.dirname(OUT_HTML))
     _write_placeholder_html(OUT_HTML, "Single Leg Mode", refresh)
 
-    global DBG
+    global DBG,FITTING_ADAPTERS
     DBG = init_debug_logger("single-leg", OUT_HTML, verbose)
+
+    FITTING_ADAPTERS = get_fitting_adapters(legs[0].chain, legs[0].chain)
 
     while True:
         try:
-            # Handle pair-any mode
-            if pair_any:
-                if ">" not in pair_any:
-                    raise ValueError(f"Invalid pair-any format: {pair_any}")
-                    
-                a_sym, b_sym = pair_any.split(">")
-                DBG.info(f"[DEBUG] Parsed pair-any tokens: {a_sym}>{b_sym}")
-
-                assetA = ASSETS.get_asset(a_sym)    
-                assetB = ASSETS.get_asset(b_sym)
-
-                if not assetA or not assetB:
-                    raise ValueError(f"Asset not found: {a_sym} or {b_sym}")    
-                
-
-                # Get quotes for all chains
-                legs = []
-                for chain in MAINCONFIG.chains:
-                    tokenA = assetA.get_token(chain.name) if assetA else None   
-                    tokenB = assetB.get_token(chain.name) if assetB else None
-                    if not tokenA or not tokenB:
-                        DBG.info(f"[DEBUG] Token not found on chain {chain.name}: {a_sym} or {b_sym}, skip")
-                        continue    
-                    leg = LegQuote(chain, tokenA, tokenB, 10000)
-                    result = await quote_basic_leg(leg)
-                    legs.append(result)
-                
-                # Render all results
-                html = render_legs_page(
-                    title=f"Multi-Chain Quote: {pair_any}",
-                    refresh=refresh,
-                    legs=legs
-                )
-                _write_html(OUT_HTML, html)
-                
-            # Handle single chain mode
-            else:
-                if not pair_spec or ":" not in pair_spec or ">" not in pair_spec:
-                    raise ValueError(f"Invalid pair spec format: {pair_spec}")
-                    
-                chain_name, tokens = pair_spec.split(":")
-                a_sym, b_sym = tokens.split(">")
-                
-                # Add debug logs
-                DBG.info(f"[DEBUG] Processing pair: {chain_name}:{a_sym}>{b_sym}")
-                
-                # Get chain
-                chain = CHAINS.get_chain(chain_name)
-                if not chain:
-                    raise ValueError(f"Chain not found: {chain_name}")
-                DBG.info(f"[DEBUG] Found chain: {chain.name}")
-                
-                assetA=ASSETS.get_asset(a_sym)
-                assetB=ASSETS.get_asset(b_sym)
-                if not assetA or not assetB:
-                    raise ValueError(f"Asset not found: {a_sym} or {b_sym}")    
-
-                tokenA=assetA.get_token(chain.name) if assetA else None
-                tokenB=assetB.get_token(chain.name) if assetB else None
-
-                if not tokenA or not tokenB:
-                    raise ValueError(f"Token not found on chain {chain.name}: {a_sym} or {b_sym}")      
-
-                leg=LegQuote(chain,tokenA,tokenB,10000)
-                # Get quote with debug info
-                DBG.info(f"[DEBUG] Calling quote_basic_leg with base_in=10000")
-                rleg = await quote_basic_leg(leg)
+            for leg in legs:
+                DBG.info(f"[DEBUG] Processing leg: {leg.a.name}>{leg.b.name} on {leg.chain.name}")
+                rleg = await quote_one_leg(leg)
                 DBG.info(f"[DEBUG] Got leg quote: status={rleg.status}, adapter={rleg.adapter}")
                 DBG.info(f"[DEBUG] Quote details: in={rleg.base_in}, out={rleg.out_b}, out_wei={rleg.out_wei}")
                 
                 # Render result
                 html = render_legs_page(
-                    title=f"Single Leg Quote: {pair_spec}",
+                    title=f"Single Leg Quote: {leg.chain.name}:{leg.a.name}>{leg.b.name}",
                     refresh=refresh,
                     legs=[rleg]
                 )
                 _write_html(OUT_HTML, html)
-            
+                DBG.info("[DEBUG] Page rendered and written to file")
             if once:
                 break
-                
+
             await asyncio.sleep(refresh)
-            
         except KeyboardInterrupt:
             break
         except Exception as e:
-            DBG.error(f"Error in one-   leg mode: {e}")
+            DBG.error(f"Error in one-leg mode: {e}")
             traceback.print_exc()
             if once:
                 break
             await asyncio.sleep(refresh)
 
-async def run_two_leg_mode(pair_spec: str,  refresh: int, verbose: bool, once: bool):
+def make_two_leg(pair_spec: str) -> TwoLegResult:
+    """根据 pair_spec 创建 TwoLegResult 对象"""
+    ci_name, a_sym, b_sym, cj_name = parse_pair_spec(pair_spec)
+    
+    ci = CHAINS.get_chain(ci_name)
+    cj = CHAINS.get_chain(cj_name)
+    if not ci or not cj:
+        raise ValueError(f"Chain not found: {ci_name} or {cj_name}")
+
+    assetA=ASSETS.get_asset(a_sym)
+    assetB=ASSETS.get_asset(b_sym)
+    if not assetA or not assetB:
+        raise ValueError(f"Asset not found: {a_sym} or {b_sym}")
+    
+    tokenA_i=assetA.get_token(ci.name) if assetA else None  
+    tokenB_i=assetB.get_token(ci.name) if assetB else None  
+    tokenA_j=assetA.get_token(cj.name) if assetA else None  
+    tokenB_j=assetB.get_token(cj.name) if assetB else None  
+
+
+     # 使用初始数量查询报价
+    base_in = SETTINGS.get("base_in")
+    
+    if not (tokenA_i and tokenB_i and tokenA_j and tokenB_j):       
+        raise ValueError(f"Token not found on chains: {ci.name} or {cj.name}")      
+
+    leg1= LegQuote(
+        chain=ci,
+        a=tokenA_i,
+        b=tokenB_i,
+        base_in=base_in
+    )
+    leg2= LegQuote(
+        chain=cj,
+        a=tokenB_j,  # 第二腿从 B 开始
+        b=tokenA_j,
+        base_in=0  # 第二腿的输入数量由第一腿的输出决定
+    )   
+
+    twoleg= TwoLegResult(leg1,leg2)
+    return twoleg
+
+
+
+async def run_two_leg_mode(twoleg: TwoLegResult) -> None:
+
+    
+    refresh=SETTINGS.get("refresh")
+    verbose=SETTINGS.get("verbose")
+    once=SETTINGS.get("once")   
+
     """运行两腿套利模式，分析跨链套利机会"""
     _ensure_dir(os.path.dirname(OUT_HTML))
     _write_placeholder_html(OUT_HTML, "Two-Leg Mode", refresh)
+    
+    ci_name=twoleg.leg1.chain.name
+    cj_name=twoleg.leg2.chain.name  
+    a_sym=twoleg.leg1.a.name
+    b_sym=twoleg.leg1.b.name
 
     global DBG
     DBG = init_debug_logger("two-leg", OUT_HTML, verbose)
@@ -685,57 +635,8 @@ async def run_two_leg_mode(pair_spec: str,  refresh: int, verbose: bool, once: b
     
     while True:
         try:
-            # 解析交易对规格
-            try:
-                ci_name, a_sym, b_sym, cj_name = _parse_two_leg_spec(pair_spec)
-                DBG.info(f"[CHECK] Parsed pair spec: {ci_name}:{a_sym}>{b_sym} -> {cj_name}:{b_sym}>{a_sym}")
-            except ValueError as e:
-                DBG.error(f"Invalid pair spec: {e}")
-                break
-
-            # 获取链配置
-            ci = CHAINS.get_chain(ci_name)
-            cj = CHAINS.get_chain(cj_name)
-            if not ci or not cj:
-                raise ValueError(f"Chain not found: {ci_name} or {cj_name}")
-
-            # Get assets and tokens
-            assetA=ASSETS.get_asset(a_sym)
-            assetB=ASSETS.get_asset(b_sym)
-            if not assetA or not assetB:
-                raise ValueError(f"Asset not found: {a_sym} or {b_sym}")
-            
-            tokenA_i=assetA.get_token(ci.name) if assetA else None  
-            tokenB_i=assetB.get_token(ci.name) if assetB else None  
-            tokenA_j=assetA.get_token(cj.name) if assetA else None  
-            tokenB_j=assetB.get_token(cj.name) if assetB else None  
-            if not (tokenA_i and tokenB_i and tokenA_j and tokenB_j):       
-                raise ValueError(f"Token not found on chains: {ci.name} or {cj.name}")      
-
-            # 使用初始数量查询报价（默认10000）
-            base_in = 100000.0
-
-
-            DBG.info(f"[CHECK] Quoting {ci_name}:{a_sym}>{b_sym} -> {cj_name}:{b_sym}>{a_sym} with base {base_in}")
-            
-
-            leg1= LegQuote(
-                chain=ci,
-                a=tokenA_i,
-                b=tokenB_i,
-                base_in=base_in
-            )
-            leg2= LegQuote(
-                chain=cj,
-                a=tokenB_j,  # 第二腿从 B 开始
-                b=tokenA_j,
-                base_in=0  # 第二腿的输入数量由第一腿的输出决定
-            )   
-
-            twoleg= TwoLegResult(leg1,leg2)
-            DBG.info(f"[CHECK] Created two-leg quote object")   
             # 获取报价并优化数量
-            result = await quote_two_leg_once(twoleg)  
+            result = await quote_optimize_two_leg(twoleg)  
             DBG.info(f"[CHECK] Got quote result with status: {result.status}")
             
             # 渲染结果页面
@@ -759,7 +660,6 @@ async def run_two_leg_mode(pair_spec: str,  refresh: int, verbose: bool, once: b
                     DBG.error(f"Quote failed: {result.status} - {result.note}")
             else:
                 DBG.error("[CHECK] Missing legs in result")
-            
             if once:
                 break
                 
@@ -773,8 +673,11 @@ async def run_two_leg_mode(pair_spec: str,  refresh: int, verbose: bool, once: b
                 break
             await asyncio.sleep(refresh)
 
-async def run_watchlist_mode(refresh: int, once: bool, verbose: bool = True) -> None:
-    """运行监控模式"""
+async def run_watchlist_mode() -> None:
+    refresh=SETTINGS["refresh"]
+    once=SETTINGS["once"]
+    verbose=SETTINGS["verbose"]
+
     _ensure_dir(os.path.dirname(OUT_HTML))
     _write_placeholder_html(OUT_HTML, "Watchlist Mode", refresh)
     
@@ -794,7 +697,7 @@ async def run_watchlist_mode(refresh: int, once: bool, verbose: bool = True) -> 
             # 创建所有任务
             tasks = []
             for pair in pairs:
-                task = asyncio.create_task(_process_watchlist(pair))
+                task = asyncio.create_task(process_watchlist(pair))
                 tasks.append((pair, task))
 
             # 等待所有任务完成或超时
@@ -1059,64 +962,68 @@ def render_watchlist_page(title: str, results: List[TwoLegResult], refresh: int,
 
 # 6. Main function
 def main():
+    global SETTINGS
+
+    #先读取命令行参数
     ap = argparse.ArgumentParser()
     ap.add_argument("--debug", action="store_true", help="开启调试面板并写日志（需要 logger_utils.py）")
     ap.add_argument("--log-file", required=False, help="日志文件路径；缺省为与HTML同名的 .log")
     ap.add_argument("--config", default=CONFIG_PATH, help="配置文件路径，默认为 ./config.json")
-    
-    #watchList Mode
-    #ap.add_argument("--watchlist",type=str,help="Path to a watchlist.json (two-leg monitoring list). If set, run watchlist mode.")    # 单腿“合并输出”模式
     ap.add_argument("--pair-spec", required=False,help='留空=自动遍历(USDT/USDC + USDT/USDE + 与 FRXUSD 双向); 例: "ethereum:USDT>USDE,plasma:USDT>USDE"')
-    # 双腿遍历（单对）
     ap.add_argument("--two-leg",action="store_true",help="Enable two-leg mode (requires --pair-spec with two legs, e.g. ethereum:A>B,plasma:B>A)")
-    #ap.add_argument("--pair-html", required=True)
-
     ap.add_argument("--refresh", type=int, default=8)
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--once", action="store_true")
-    # ★ 新增：基础资产 CLI 覆盖
     ap.add_argument("--base-assets", required=False, help='用逗号分隔，例如 "USDT,USDC"；若提供则覆盖 config.json 的 settings.base_assets')
     ap.add_argument("--pair-any", required=False,help='只写资产对，自动遍历所有共同链，形如 "USDE>USDC"（大小写不敏感）')
+    ap.add_argument("--base-in", required=False, type=float, default=10000.0, help="基础交易数量，默认为 10000.0")
+    ap.add_argument("--run-mode", required=False, default="watchlist", help="运行模式，默认为 watchlist,还可以接受one-leg或two-leg")
+
+    # 解析命令行参数    
     args = ap.parse_args()
 
-    # Load config once at the start
+    # Validate args
+    if bool(args.run_mode) and args.run_mode not in ["watchlist", "one-leg", "two-leg"]:
+        ap.error("无效的运行模式")
+    elif args.run_mode == "two-leg" and not args.pair_spec:
+        ap.error("--two-leg 模式需要 --pair-spec 参数")
+    elif args.run_mode == "one-leg" and not (args.pair_spec or args.pair_any):
+        ap.error("--one-leg 模式需要 --pair-spec 或 --pair-any 参数")
+
+
+    #only Load config once
     load_config(args.config)
     DBG.info("[CHECK] Configuration loaded")
-    DBG.info(f"[CHECK] Settings: {SETTINGS['run_mode']}")
 
+    #用CLI参数覆盖配置文件
+    if args.run_mode:
+        SETTINGS["run_mode"] = args.run_mode
+    if args.base_in:
+        SETTINGS["base_in"] = args.base_in
+    if args.refresh:
+        SETTINGS["refresh"] = args.refresh
+    if args.verbose:    
+        SETTINGS["verbose"] = args.verbose  
+    if args.once:  
+        SETTINGS["once"] = args.once    
+    
     # 创建全局变量 ADAPTERS ，只在main()执行一次
-    build_adapters(MAINCONFIG)
+    build_adapters()
 
-    # ★ 保存 CLI 覆盖集合
-    global CLI_BASE_ASSETS
-    CLI_BASE_ASSETS = _parse_base_assets_arg(args.base_assets)
-
+    # 运行不同的模式
     try:
         if SETTINGS.get("run_mode") == "watchlist" :
-            asyncio.run(
-                run_watchlist_mode( 
-                    args.refresh,
-                    args.once,
-                    args.verbose
-                )
-            )
+            asyncio.run(run_watchlist_mode())
         elif SETTINGS.get("run_mode") =="two-leg":
+            twoleg=make_two_leg(args.pair_spec)  
+            DBG.info("[CHECK] pair_spec validated for two-leg mode")
             # 两腿模式
-            asyncio.run(run_two_leg_mode(  
-                args.pair_spec,
-                args.refresh,
-                args.verbose,
-                args.once
-            ))
+            asyncio.run(run_two_leg_mode(twoleg))
         elif SETTINGS.get("run_mode") =="one-leg":
+            legs=make_one_legs(args.pair_spec) 
+            DBG.info(f"[CHECK] Created {len(legs)} legs for one-leg mode from pair_spec")
             # 单腿模式
-            asyncio.run(run_one_leg_mode(
-                args.pair_spec,
-                args.refresh,
-                args.verbose,
-                args.once,
-                args.pair_any
-            ))
+            asyncio.run(run_one_leg_mode(legs))
         else:
             ap.error("请选择 --two-leg 或 --pair-spec/--pair-any 之一")
     except ImportError:

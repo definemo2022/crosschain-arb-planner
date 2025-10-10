@@ -10,6 +10,7 @@ from logger_utils import init_debug_logger, NullLogger
 from chains import load_chains_from_config, Chains, Chain
 from assets import load_assets_from_config, Token, Tokens, Asset, Assets
 from appconfig import AppConfig
+from datetime import datetime
 
 # 2. Global variables
 DBG = NullLogger()
@@ -254,12 +255,11 @@ async def _process_watchlist(pair: Dict) -> Optional[TwoLegResult]:
     
 
 # 4. Core functions
-def load_config():
-    """加载配置文件"""
-    global CHAINS, DBG,CONFIG_PATH,ASSETS,MAINCONFIG,SETTINGS
+def load_config(config_path: str) -> AppConfig  :
+    global CHAINS, DBG,ASSETS,MAINCONFIG,SETTINGS
 
     try:
-        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             raw = json.load(f)
         
         DBG.info("[CONFIG] Loading config file...")
@@ -963,95 +963,106 @@ def render_legs_page(title: str, refresh: int, legs: list[LegQuote], head_extra:
         f"<body><h2>{title}</h2><div class='sub'>Auto-refresh: {int(refresh)}s</div>{table}</body></html>"
     )
 
-def render_watchlist_page(title: str, results: List[TwoLegResult], refresh: int, total_pairs: int, processed_pairs: int) -> str:
-    """渲染监控结果页面"""
-    progress = f"Processing: {processed_pairs}/{total_pairs} pairs"
-    
+def _get_row_class(result: TwoLegResult) -> str:
+    """Get CSS class for result row"""
+    if result.status == LEG_ERROR or result.status == "ERROR":
+        return "error"
+    elif result.status == "TIMEOUT":
+        return "timeout"
+    elif result.pnl and result.pnl > 0:
+        return "profit"
+    else:
+        return "normal"
+
+def _format_time() -> str:
+    """Format current time for display"""
+    return datetime.now().strftime("%H:%M:%S")
+
+def _format_pair(result: TwoLegResult) -> str:
+    """Format trading pair for display"""
+    if not (result.leg1 and result.leg2):
+        return "-"
+    return f"{result.leg1.chain.name}:{result.leg1.a.name}>{result.leg1.b.name},{result.leg2.chain.name}:{result.leg2.a.name}>{result.leg2.b.name}"
+
+def _format_pnl(result: TwoLegResult) -> str:
+    """Format PnL for display"""
+    if result.pnl is None:
+        return "-"
+    return f"{result.pnl:.6f}"
+
+def render_watchlist_page(title: str, results: List[TwoLegResult], refresh: int, total: int, done: int) -> str:
+    """渲染 watchlist 模式的结果页面"""
     css = """
-    body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft YaHei';
-        margin:20px;color:#0f172a}
-    .t{border-collapse:collapse;width:100%} .t th,.t td{border:1px solid #e2e8f0;padding:8px}
-    .t th{text-align:left;background:#f8fafc}
-    .profit{color:#059669} .loss{color:#dc2626}
-    .muted{color:#64748b;font-size:12px}
+    <style>
+        body { font-family: monospace; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        tr.profit { background-color: #90EE90; }
+        tr.error { background-color: #FFB6C6; }
+        tr.timeout { background-color: #FFE4B5; }
+        tr.normal { background-color: white; }
+    </style>
+    """
+    
+    meta = f"""
+    <meta http-equiv="refresh" content="{refresh}">
+    <title>{title}</title>
+    """
+    
+    table_header = """
+    <tr>
+        <th>Time</th>
+        <th>Pair</th>
+        <th>Base</th>
+        <th>Final A</th>
+        <th>PnL</th>
+        <th>Status</th>
+        <th>Note</th>
+    </tr>
     """
     
     rows = []
-    total_quotes = 0
     for r in results:
-        pnl_class = "profit" if r.pnl and r.pnl > 0 else "loss"
+        final_a = r.leg2.out_b if r.leg2 and r.leg2.out_b else None
+        final_a_str = f"{final_a:.6f}" if final_a is not None else "-"
         
-        # 从 note 中提取 Quotes 数量
-        quote_count = 0
-        if "Quotes:" in r.note:
-            try:
-                quote_str = r.note.split("Quotes:")[1].split(",")[0].strip()
-                quote_count = int(quote_str)
-                total_quotes += quote_count
-            except:
-                pass
-                
-        # 添加计数显示
-        count_display = f"<span class='muted'>({quote_count} quotes)</span>" if quote_count > 0 else ""
-        
-        rows.append(f"""
-            <tr>
-                <td>{r.leg1.chain.name}→{r.leg2.chain.name}</td>
-                <td>{r.leg1.a.name}→{r.leg1.b.name}→{r.leg1.a.name} {count_display}</td>
-                <td>{_fmt(r.leg1.base_in)}</td>
-                <td class="{pnl_class}">{_fmt(r.pnl)}</td>
-                <td class="{pnl_class}">{_fmt(r.pnl_pct, 2)}%</td>
-                <td>{r.status}</td>
-                <td>{r.note}</td>
-            </tr>
-        """)
-
-    table = f"""
-    <table class="t">
-        <thead>
-            <tr>
-                <th>Chains</th>
-                <th>Path</th>
-                <th>Base</th>
-                <th>PnL</th>
-                <th>PnL%</th>
-                <th>Status</th>
-                <th>Note</th>
-            </tr>
-        </thead>
-        <tbody>
-            {''.join(rows)}
-        </tbody>
-    </table>
-    """
-
-    # 添加总请求数显示
-    total_stats = f"Total quotes: {total_quotes}"
-
-    return f"""<!DOCTYPE html>
+        row = f"""
+        <tr class="{_get_row_class(r)}">
+            <td>{_format_time()}</td>
+            <td>{_format_pair(r)}</td>
+            <td>{r.leg1.base_in if r.leg1 else '-'}</td>
+            <td>{final_a_str}</td>
+            <td>{_format_pnl(r)}</td>
+            <td>{r.status or '-'}</td>
+            <td>{r.note or '-'}</td>
+        </tr>
+        """
+        rows.append(row)
+    
+    html = f"""
     <html>
     <head>
-        <meta charset="utf-8">
-        <meta http-equiv="refresh" content="{refresh}">
-        <title>{title}</title>
-        <style>{css}</style>
+        {meta}
+        {css}
     </head>
     <body>
         <h2>{title}</h2>
-        <div style="color:#64748b;margin:6px 0">
-            {progress} · {total_stats} · Auto refresh {refresh}s · {_now_str()}
-        </div>
-        {table}
+        <p>Processed: {done}/{total}</p>
+        <table>
+            {table_header}
+            {''.join(rows)}
+        </table>
     </body>
     </html>
     """
+    return html
 
 # 6. Main function
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--debug", action="store_true", help="开启调试面板并写日志（需要 logger_utils.py）")
     ap.add_argument("--log-file", required=False, help="日志文件路径；缺省为与HTML同名的 .log")
-    #ap.add_argument("--config", required=True)
+    ap.add_argument("--config", default=CONFIG_PATH, help="配置文件路径，默认为 ./config.json")
     
     #watchList Mode
     #ap.add_argument("--watchlist",type=str,help="Path to a watchlist.json (two-leg monitoring list). If set, run watchlist mode.")    # 单腿“合并输出”模式
@@ -1069,7 +1080,7 @@ def main():
     args = ap.parse_args()
 
     # Load config once at the start
-    load_config()
+    load_config(args.config)
     DBG.info("[CHECK] Configuration loaded")
     DBG.info(f"[CHECK] Settings: {SETTINGS['run_mode']}")
 

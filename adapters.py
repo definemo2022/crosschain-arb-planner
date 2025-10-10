@@ -169,11 +169,6 @@ class KyberAdapter(BaseAdapter):
     async def quote(self, leg: LegQuote) -> LegQuote:
         """Get quote from Kyber"""
         leg.adapter = self.name
-        
-        if not self.supports_chain(leg.chain.name):
-            leg.status = LEG_NO_QUOTE
-            leg.note = f"Adapter disabled on chain {leg.chain.name}"
-            return leg
 
         if not (leg.a and leg.b):
             leg.status = LEG_NO_ADDR
@@ -191,7 +186,9 @@ class KyberAdapter(BaseAdapter):
             }
             
             chain_path = getattr(leg.chain, "kyber_slug", "") or leg.chain.name.lower()
+            logger.info(f"[DEBUG] KyberAdapter using chain_path: {chain_path}") 
             url = f"{base}/{chain_path}/api/v1/routes"
+            logger.info(f"[DEBUG] KyberAdapter full URL: {url}")    
             
             logger.info(f"[DEBUG] KyberAdapter querying: {url}")
             logger.info(f"[DEBUG] KyberAdapter params: {qs}")

@@ -1,37 +1,23 @@
 # adapters.py
 from __future__ import annotations
-import asyncio
-from typing import Optional, Callable, Dict, Any, List
-from appconfig import AppConfig
+from typing import Optional, Any
 from leg_quote import LegQuote, LEG_OK, LEG_NO_ADDR, LEG_NO_QUOTE, LEG_ERROR
 from assets import Token
-from logger_utils import NullLogger
+from logger_utils import NullLogger, SafeDebugLogger
 import json
-
-# callable 签名：await fn(app, chain, in_addr, out_ad
-# dr, in_wei) -> 任意(raw)
-QuoteFn = Callable[[Any, Any, str, str, int], Any]
-
-logger = NullLogger()
-
-
 
 class BaseAdapter:
     """
     标准适配器基类：
       - name: 适配器名（如 "kyber", "odos"）
-      - quote_fn: 具体报价函数指针（由主程序注入，避免循环依赖）
       - supports_chain(): 可由 settings.adapter_support[name] 控制
       - quote(): 统一返回 LegQuote
     """
     name: Optional[str] = None  # 适配器名，由子类覆盖
 
-    def __init__(self, app: Any, quote_fn: Optional[QuoteFn] = None):
+    def __init__(self, app: Any, dbg: SafeDebugLogger | NullLogger):
         self.app = app
-        self.quote_fn = quote_fn
-        # Get logger from app if available
-        global logger
-        logger = getattr(app, 'logger', NullLogger())
+        self.logger = dbg
 
     async def _fetch_http(self, method: str, url: str, *, headers=None, params=None, json_body=None, timeout=12):
         """HTTP 请求封装，统一处理异常"""
@@ -56,7 +42,6 @@ class BaseAdapter:
             snippet = (resp_text or "")[:400].replace("\n", "\\n")
             raise ValueError(f"{where}: non-JSON or empty body. body[:400]={snippet!r}") from e
         
-
     def supports_chain(self, chain_name: str) -> bool:
         support = self.app.settings.get("adapter_support") or {}
         if not support:  # 未配置则默认全链可用
@@ -141,28 +126,6 @@ class BaseAdapter:
             except Exception:
                 return 0
 
-    # —— 统一组装 LegQuote —— #
-
-    def _make_leg(self, chain_name: str, a_sym: str, b_sym: str, base_in: float,
-                  adapter: str, out_wei: int, dB: int, status: str, note: str = "",
-                  a_token: Optional[Token] = None, b_token: Optional[Token] = None) -> LegQuote:
-        out_b = (out_wei / float(10 ** dB)) if (out_wei and dB is not None) else None
-        return LegQuote(
-            chain=chain_name, 
-            a=a_sym, 
-            b=b_sym, 
-            base_in=float(base_in),
-            in_wei=None, 
-            out_b=out_b, 
-            out_wei=int(out_wei or 0),
-            adapter=adapter, 
-            status=status, 
-            note=note,
-            a_token=a_token,  # Add Token objects
-            b_token=b_token
-        )
-
-
 class KyberAdapter(BaseAdapter):
     name = "kyber"
     
@@ -182,29 +145,29 @@ class KyberAdapter(BaseAdapter):
                 "tokenOut": leg.b.address,
                 "amountIn": str(leg.in_wei),
                 "gasInclude": "1",
-                "saveGas": "0"
+                "saveGas": "0",
+                "excludeSources": "liquidation"
             }
             
             chain_path = getattr(leg.chain, "kyber_slug", "") or leg.chain.name.lower()
-            logger.info(f"[DEBUG] KyberAdapter using chain_path: {chain_path}") 
+            self.logger.info(f"[DEBUG] KyberAdapter using chain_path: {chain_path}") 
             url = f"{base}/{chain_path}/api/v1/routes"
-            logger.info(f"[DEBUG] KyberAdapter full URL: {url}")    
-            
-            logger.info(f"[DEBUG] KyberAdapter querying: {url}")
-            logger.info(f"[DEBUG] KyberAdapter params: {qs}")
+            self.logger.info(f"[DEBUG] KyberAdapter full URL: {url}")
+            self.logger.info(f"[DEBUG] KyberAdapter querying: {url}")
+            self.logger.info(f"[DEBUG] KyberAdapter params: {qs}")
             
             code, text, headers = await self._fetch_http("GET", url, params=qs)
             
             if code == 200 and text:
                 data = self._safe_json_parse(text, where=f"kyber {url}")
-                logger.info(f"[DEBUG] KyberAdapter response: {data}")
+                self.logger.info(f"[DEBUG] KyberAdapter response: {data}")
                 
                 if data.get("code") == 0 and "data" in data:
                     route_summary = data["data"].get("routeSummary", {})
                     if "amountOut" in route_summary:
                         out_amt = int(route_summary["amountOut"])
                         out_base = out_amt / (10 ** leg.b.decimals)
-                        logger.info(f"[DEBUG] KyberAdapter quote: {out_amt} wei -> {out_base} {leg.b.name}")
+                        self.logger.info(f"[DEBUG] KyberAdapter quote: {out_amt} wei -> {out_base} {leg.b.name}")
                         
                         leg.out_wei = out_amt
                         leg.out_b = out_base
@@ -216,7 +179,7 @@ class KyberAdapter(BaseAdapter):
             return leg
 
         except Exception as e:
-            logger.error(f"[ERROR] KyberAdapter error: {str(e)}")
+            self.logger.error(f"[ERROR] KyberAdapter error: {str(e)}")
             leg.status = LEG_ERROR
             leg.note = str(e)
             return leg
@@ -240,7 +203,7 @@ class OdosAdapter(BaseAdapter):
 
         try:
             # Remove redundant conversion since in_wei is already set
-            logger.info(f"[DEBUG] OdosAdapter using in_wei: {leg.in_wei}")
+            self.logger.info(f"[DEBUG] OdosAdapter using in_wei: {leg.in_wei}")
             
             # Prepare API request
             base = self.app.api.get("odos_base", "https://api.odos.xyz").rstrip("/")
@@ -255,48 +218,48 @@ class OdosAdapter(BaseAdapter):
                 "compact": True
             }
             
-            logger.info(f"[DEBUG] OdosAdapter querying: {url}")
-            logger.info(f"[DEBUG] OdosAdapter payload: {payload}")
-            
+            self.logger.info(f"[DEBUG] OdosAdapter querying: {url}")
+            self.logger.info(f"[DEBUG] OdosAdapter payload: {payload}")
+
             code, text, _ = await self._fetch_http("POST", url, json_body=payload)
-            logger.info(f"[DEBUG] OdosAdapter response code: {code}")
-            logger.info(f"[DEBUG] OdosAdapter response text: {text[:200]}")
-            
+            self.logger.info(f"[DEBUG] OdosAdapter response code: {code}")
+            self.logger.info(f"[DEBUG] OdosAdapter response text: {text[:200]}")
+
             if code == 200 and text:
                 data = self._safe_json_parse(text, where=f"odos {url}")
-                logger.info(f"[DEBUG] OdosAdapter parsed data: {json.dumps(data)[:200]}")
-                
+                self.logger.info(f"[DEBUG] OdosAdapter parsed data: {json.dumps(data)[:200]}")
+
                 out_amt = None
                 if isinstance(data, dict):
                     # Try all possible paths for output amount
                     if "outAmounts" in data and isinstance(data["outAmounts"], list) and data["outAmounts"]:
                         out_amt = int(data["outAmounts"][0])
-                        logger.info(f"[DEBUG] Found amount in outAmounts: {out_amt}")
+                        self.logger.info(f"[DEBUG] Found amount in outAmounts: {out_amt}")
                     elif "outAmount" in data:
                         out_amt = int(data["outAmount"])
-                        logger.info(f"[DEBUG] Found amount in outAmount: {out_amt}")
+                        self.logger.info(f"[DEBUG] Found amount in outAmount: {out_amt}")
                     elif "outputTokens" in data and data["outputTokens"] and "amount" in data["outputTokens"][0]:
                         out_amt = int(data["outputTokens"][0]["amount"])
-                        logger.info(f"[DEBUG] Found amount in outputTokens: {out_amt}")
+                        self.logger.info(f"[DEBUG] Found amount in outputTokens: {out_amt}")
 
                 if out_amt is not None:
                     out_base = out_amt / (10 ** leg.b.decimals)
-                    logger.info(f"[DEBUG] OdosAdapter quote: {out_amt} wei -> {out_base} {leg.b.name}")
-                    
+                    self.logger.info(f"[DEBUG] OdosAdapter quote: {out_amt} wei -> {out_base} {leg.b.name}")
+
                     leg.out_wei = out_amt
                     leg.out_b = out_base
                     leg.status = LEG_OK
                     return leg
                 else:
-                    logger.error(f"[DEBUG] No output amount found in response")
+                    self.logger.error(f"[DEBUG] No output amount found in response")
             
             leg.status = LEG_NO_QUOTE
             leg.note = f"No valid quote received (HTTP {code})"
             return leg
 
         except Exception as e:
-            logger.error(f"[ERROR] OdosAdapter error: {str(e)}")
+            self.logger.error(f"[ERROR] OdosAdapter error: {str(e)}")
             leg.status = LEG_ERROR
             leg.note = str(e)
             return leg
-          
+

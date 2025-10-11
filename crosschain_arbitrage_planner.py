@@ -14,7 +14,6 @@ from datetime import datetime
 
 # 2. Global variables
 DBG = NullLogger()
-
 MAINCONFIG:Optional[AppConfig]=None
 
 # Add a global counter
@@ -32,67 +31,14 @@ SETTINGS: Dict[str, Any] = {}
 ADAPTERS:List[BaseAdapter] = []
 FITTING_ADAPTERS:List[BaseAdapter] = []
 
-# ---- 基础资产：配置与 CLI 覆盖 ----
-CLI_BASE_ASSETS: set[str] = set()
-
 #创建全局变量 ADAPTERS ，只在main()执行一次
 def build_adapters():
     global FITTING_ADAPTERS
-    ADAPTERS.append(KyberAdapter(MAINCONFIG))
-    ADAPTERS.append(OdosAdapter(MAINCONFIG))
+    ADAPTERS.append(KyberAdapter(MAINCONFIG, DBG))
+    ADAPTERS.append(OdosAdapter(MAINCONFIG, DBG))
     FITTING_ADAPTERS = ADAPTERS.copy() #one-leg 时使用全部适配器
 
-
 # 3. Helper functions
-def compare_best_leg(legs: List[LegQuote]) -> Optional[LegQuote]:
-    """比较多个 LegQuote，返回 out_b 最大且状态为 LEG_OK 的 LegQuote"""
-    best = None
-    for leg in legs:
-        if leg.status != LEG_OK:
-            continue
-        if not best or leg.out_b > best.out_b:
-            best = leg
-    return best
-
-
-async def quote_leg_from_adapters(leg : LegQuote ):
-    """从多个适配器中选择最佳报价"""
-    
-    # Create tasks for each adapter
-    tasks = []
-    for adapter in FITTING_ADAPTERS :        
-        tasks.append((adapter.name, asyncio.create_task(adapter.quote(leg))))
-
-    if not tasks:
-        DBG.error(f"[DEBUG] No adapters support chain {leg.chain.name}")
-        leg.status = LEG_NO_QUOTE
-        leg.note = f"No adapters support chain {leg.chain.name}"
-        return leg
-    
-    # Gather quotes with error handling
-    quotes = []
-    for adapter_name, task in tasks:
-        try:
-            quote = await task
-            DBG.info(f"[DEBUG] Raw quote from {adapter_name}: {vars(quote)}")
-            quotes.append(quote)
-        except Exception as e:
-            DBG.error(f"[ERROR] Adapter {adapter_name} failed: {str(e)}")
-            DBG.error(f"[ERROR] Stack trace: ", exc_info=True)
-
-    DBG.info(f"[DEBUG] Received {len(quotes)} quotes")
-
-    # Find best quote
-    best = compare_best_leg(quotes)
-    if best:
-        DBG.info(f"[DEBUG] Selected best quote from {best.adapter}: {best.out_b} {leg.b.name}")
-        return best
-    
-    # No valid quotes found
-    leg.status = LEG_NO_QUOTE
-    leg.note = "no valid quotes"
-    DBG.error(f"[DEBUG] No valid quotes received from any adapter")
-    return leg
 
 def _ensure_dir(path: str):
     """Directory creation helper"""
@@ -111,10 +57,6 @@ def _fmt(x, decimals: int = 6, dash: str = "—") -> str:
         return str(x)
     return f"{xf:,.{decimals}f}"
 
-def _now_str() -> str:
-    """Time string helper"""
-    return time.strftime("%Y-%m-%d %H:%M:%S")
-
 def _write_placeholder_html(path: str, title: str, refresh: int):
     _ensure_dir(path)
     html = f"""<!doctype html><html><head>
@@ -132,16 +74,6 @@ def _write_html(path: str, html: str):
     _ensure_dir(path)
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
-
-def _safe_json_parse(resp_text: str, *, where: str) -> Any:
-    try:
-        return json.loads(resp_text)
-    except Exception as e:
-        snippet = (resp_text or "")[:400].replace("\n", "\\n")
-        raise ValueError(f"{where}: non-JSON or empty body. body[:400]={snippet!r}") from e
-
-def _from_wei(amount: int, decimals: int) -> float:
-    return float(amount) / (10 ** decimals)
 
 def parse_pair_spec(pair_spec: str):
     """
@@ -164,34 +96,6 @@ def parse_pair_spec(pair_spec: str):
         raise ValueError(f"two-leg 第二腿应为 {b1}>{a1}，当前: {b2}>{a2}")
     return ci_name, a1, b1, cj_name
 
-def _parse_base_assets_arg(s: str | None) -> set[str]:
-    if not s:
-        return set()
-    return {x.strip().upper() for x in s.split(",") if x.strip()}
-
-def _base_assets(app: AppConfig) -> set[str]:
-    # CLI 优先；否则读 config.json settings.base_assets
-    if CLI_BASE_ASSETS:
-        return {x for x in CLI_BASE_ASSETS if x in app.assets}
-    cfg = SETTINGS.get("base_assets", [])
-    if not isinstance(cfg, (list, tuple)):
-        return set()
-    return {str(x).strip().upper() for x in cfg if str(x).strip().upper() in app.assets}
-
-def _skip_pair_by_base(base_set: set[str], a_sym: str, b_sym: str) -> bool:
-    """
-    仅允许一端在基础资产集合、另一端不在（XOR）：
-      - 基础↔基础：跳过
-      - 非基础↔非基础：跳过
-      - 基础↔非基础：允许
-    """
-    a_in = a_sym in base_set
-    b_in = b_sym in base_set
-    # 允许条件是异或（恰好一端在基础集合）
-    allow = (a_in ^ b_in)
-    return not allow  # 返回 True=跳过
-
-
 def get_fitting_adapters(ci: Chain, cj: Chain) -> List[BaseAdapter]:
     """获取同时支持 ci 和 cj 的适配器列表"""
     fitting = []
@@ -200,6 +104,7 @@ def get_fitting_adapters(ci: Chain, cj: Chain) -> List[BaseAdapter]:
             fitting.append(adapter)
     return fitting
 
+# 4. Core functions
 async def process_watchlist(pair: Dict) -> Optional[TwoLegResult]:
     """处理单个 watchlist 对"""
     try:
@@ -263,35 +168,25 @@ async def process_watchlist(pair: Dict) -> Optional[TwoLegResult]:
         DBG.error(f"[WATCH] Error processing pair {pair}: {e}")
         return None
     
-
-# 4. Core functions
 def load_config(config_path: str) -> AppConfig  :
-    global CHAINS, DBG,ASSETS,MAINCONFIG,SETTINGS
+    global CHAINS,ASSETS,MAINCONFIG,SETTINGS
 
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             raw = json.load(f)
         
-        DBG.info("[CONFIG] Loading config file...")
-        
         # 初始化全局 CHAINS
         CHAINS = load_chains_from_config(raw)
-        DBG.info(f"[CONFIG] Loaded {len(CHAINS)} chains")
+     
         
         # 加载资产
         ASSETS = load_assets_from_config(raw, CHAINS)
-        DBG.info(f"[CONFIG] Loaded {len(ASSETS.assets)} assets")
-        
+    
         # 加载 settings
         SETTINGS = raw.get("settings", {})
         if not isinstance(SETTINGS, dict):
             SETTINGS = {}
 
-
-        DBG.info(SETTINGS.get("run_mode","watchlist"))       
-        DBG.info(f"[CONFIG] Loaded {len(SETTINGS)} settings")
-        DBG.info("[CONFIG] Config loaded successfully")
-        
         MAINCONFIG=AppConfig(
             api=raw.get("api", {}),
             chains=CHAINS.chains,
@@ -301,10 +196,9 @@ def load_config(config_path: str) -> AppConfig  :
 
         return MAINCONFIG
     except Exception as e:
-        DBG.error(f"Failed to load config: {e}")
         raise
 
-def _load_watchlist_json(path: str) -> list[dict]:
+def load_watchlist_json(path: str) -> list[dict]:
     """读取 watchlist.json，返回条目列表"""
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -328,6 +222,55 @@ def _load_watchlist_json(path: str) -> list[dict]:
         norm_list.append(it)
 
     return norm_list
+
+async def quote_leg_from_adapters(leg : LegQuote ):
+    """从多个适配器中选择最佳报价"""
+    
+    # Create tasks for each adapter
+    tasks = []
+    for adapter in FITTING_ADAPTERS :        
+        tasks.append((adapter.name, asyncio.create_task(adapter.quote(leg))))
+
+    if not tasks:
+        DBG.error(f"[DEBUG] No adapters support chain {leg.chain.name}")
+        leg.status = LEG_NO_QUOTE
+        leg.note = f"No adapters support chain {leg.chain.name}"
+        return leg
+    
+    # Gather quotes with error handling
+    quotes = []
+    for adapter_name, task in tasks:
+        try:
+            quote = await task
+            DBG.info(f"[DEBUG] Raw quote from {adapter_name}: {vars(quote)}")
+            quotes.append(quote)
+        except Exception as e:
+            DBG.error(f"[ERROR] Adapter {adapter_name} failed: {str(e)}")
+            DBG.error(f"[ERROR] Stack trace: ", exc_info=True)
+
+    DBG.info(f"[DEBUG] Received {len(quotes)} quotes")
+
+    # Find best quote
+    best = compare_best_leg(quotes)
+    if best:
+        DBG.info(f"[DEBUG] Selected best quote from {best.adapter}: {best.out_b} {leg.b.name}")
+        return best
+    
+    # No valid quotes found
+    leg.status = LEG_NO_QUOTE
+    leg.note = "no valid quotes"
+    DBG.error(f"[DEBUG] No valid quotes received from any adapter")
+    return leg
+
+def compare_best_leg(legs: List[LegQuote]) -> Optional[LegQuote]:
+    """比较多个 LegQuote，返回 out_b 最大且状态为 LEG_OK 的 LegQuote"""
+    best = None
+    for leg in legs:
+        if leg.status != LEG_OK:
+            continue
+        if not best or leg.out_b > best.out_b:
+            best = leg
+    return best
 
 async def quote_one_leg(leg: LegQuote) -> "LegQuote":
     """Get basic quote from adapters for a token pair on a single chain."""
@@ -400,7 +343,6 @@ async def quote_two_leg_once(twoleg: TwoLegResult) -> TwoLegResult:
         twoleg.note = f"Quote error: {str(e)}"
         return twoleg
         
-
 async def quote_optimize_two_leg(twoleg: TwoLegResult) -> TwoLegResult:
     """Quote two legs with concurrent size testing"""
     try:
@@ -494,13 +436,16 @@ def make_one_legs(pair_spec: str) -> List[LegQuote]:
     if not pair_spec or ">" not in pair_spec:
         raise ValueError(f"Invalid pair spec format: {pair_spec}")
     
+    chains: Chains
     if ":" not in pair_spec:
         chains=CHAINS
         tokens=pair_spec
     else:
         chain_name, tokens = pair_spec.split(":")
         chains=Chains([CHAINS.get_chain(chain_name)]) if CHAINS.get_chain(chain_name) else Chains([])
-    
+    DBG.info(f"[DEBUG] make chains: {len(chains)} from {pair_spec}")
+
+
     a_sym, b_sym = tokens.split(">")
 
     DBG.info(f"[DEBUG] Parsed pair-any tokens: {a_sym}>{b_sym}")
@@ -522,7 +467,7 @@ def make_one_legs(pair_spec: str) -> List[LegQuote]:
             DBG.info(f"[DEBUG] Token not found on chain {chain.name}: {a_sym} or {b_sym}, skip")
             continue
         leg = LegQuote(chain, tokenA, tokenB, base_in)
-        legs.append(leg)
+        legs.append(leg)  
     return legs
 
 async def run_one_leg_mode(legs:List[LegQuote]):
@@ -533,29 +478,71 @@ async def run_one_leg_mode(legs:List[LegQuote]):
     
     """运行单腿报价模式"""
     _ensure_dir(os.path.dirname(OUT_HTML))
-    _write_placeholder_html(OUT_HTML, "Single Leg Mode", refresh)
+    _write_placeholder_html(OUT_HTML, "One Leg Mode", refresh)
 
     global DBG,FITTING_ADAPTERS
-    DBG = init_debug_logger("single-leg", OUT_HTML, verbose)
+    
 
     FITTING_ADAPTERS = get_fitting_adapters(legs[0].chain, legs[0].chain)
 
     while True:
         try:
+            tasks = []
             for leg in legs:
                 DBG.info(f"[DEBUG] Processing leg: {leg.a.name}>{leg.b.name} on {leg.chain.name}")
-                rleg = await quote_one_leg(leg)
-                DBG.info(f"[DEBUG] Got leg quote: status={rleg.status}, adapter={rleg.adapter}")
-                DBG.info(f"[DEBUG] Quote details: in={rleg.base_in}, out={rleg.out_b}, out_wei={rleg.out_wei}")
-                
-                # Render result
-                html = render_legs_page(
-                    title=f"Single Leg Quote: {leg.chain.name}:{leg.a.name}>{leg.b.name}",
-                    refresh=refresh,
-                    legs=[rleg]
+                task = asyncio.create_task(quote_one_leg(leg))
+                tasks.append((leg, task))
+
+            # 等待所有任务完成或超时
+            timeout = SETTINGS.get("timeout_sec", 60)
+            DBG.info(f"[CHECK] Processing {len(tasks)} pairs with timeout={timeout}s")
+            
+            try:
+                done, pending = await asyncio.wait(
+                    [t[1] for t in tasks],
+                    timeout=timeout
                 )
-                _write_html(OUT_HTML, html)
-                DBG.info("[DEBUG] Page rendered and written to file")
+                results = []
+                # 处理完成的任务
+                for leg, task in tasks:
+                    if task in done:
+                        try:
+                            result = task.result()
+                            if result:
+                                results.append(result)
+                                DBG.info(f"[CHECK] Got result for {leg.chain.name}:{leg.a.name}>{leg.b.name}")
+                        except Exception as e:
+                            error_count += 1
+                            DBG.error(f"Task error for {leg.chain.name}:{leg.a.name}>{leg.b.name}: {e}")
+                    else:
+                        timeout_count += 1
+                        DBG.warn(f"Task timeout for {leg.chain.name}:{leg.a.name}>{leg.b.name}")
+                        task.cancel()
+                        leg.status = "TIMEOUT"
+                        leg.note = f"Timeout after {timeout}s"  
+                        # Create a blank TwoLegResult for timeout case
+                        results.append(leg)
+
+                # Cancel any remaining pending tasks
+                for task in pending:
+                    task.cancel()
+                    
+            except asyncio.TimeoutError:
+                timeout_count += len(tasks)
+                DBG.warn(f"Global timeout after {timeout}s")
+                for _, task in tasks:
+                    if not task.done():
+                        task.cancel()
+
+            # Render result
+            DBG.info(f"[CHECK] Rendering page ")   
+            html = render_legs_page(
+                title=f"One Leg Quote: {leg.chain.name}:{leg.a.name}>{leg.b.name}",
+                refresh=refresh,
+                legs=results
+            )
+            _write_html(OUT_HTML, html)
+            DBG.info("[CHECK] Page rendered and written to file")
             if once:
                 break
 
@@ -611,8 +598,6 @@ def make_two_leg(pair_spec: str) -> TwoLegResult:
     twoleg= TwoLegResult(leg1,leg2)
     return twoleg
 
-
-
 async def run_two_leg_mode(twoleg: TwoLegResult) -> None:
 
     
@@ -630,7 +615,7 @@ async def run_two_leg_mode(twoleg: TwoLegResult) -> None:
     b_sym=twoleg.leg1.b.name
 
     global DBG
-    DBG = init_debug_logger("two-leg", OUT_HTML, verbose)
+    
     DBG.info("[CHECK] Starting two-leg mode")
     
     while True:
@@ -682,12 +667,11 @@ async def run_watchlist_mode() -> None:
     _write_placeholder_html(OUT_HTML, "Watchlist Mode", refresh)
     
     global DBG
-    DBG = init_debug_logger("watchlist", OUT_HTML, verbose)
     
     while True:
         try:
             # 读取 watchlist
-            pairs = _load_watchlist_json(WATCHLIST_PATH)
+            pairs = load_watchlist_json(WATCHLIST_PATH)
             DBG.info(f"[CHECK] Loaded pairs from watchlist: {len(pairs)}")
             
             results = []
@@ -796,47 +780,6 @@ async def run_watchlist_mode() -> None:
             await asyncio.sleep(refresh)
 
 # 5.1 render functions
-def _render_page(title: str, refresh: int, rows: List[dict], debug_html: str = "", head_extra: str = "") -> str:
-    esc = lambda s: (s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-    table_rows = []
-    if rows:
-        for r in rows:
-            table_rows.append(
-                f"<tr>"
-                f"<td style='text-align:left'>{esc(r['leg'])} "
-                f"<span style='color:#64748b'>(base {r['sell']})</span></td>"
-                f"<td>{esc(r['adapter'])}</td>"
-                f"<td>{r['out_str']}</td>"
-                f"<td>{r['px_str']}</td>"
-                f"</tr>"
-            )
-        body_html = f"""
-        <table class="t">
-          <thead><tr><th>Pair</th><th>Adapter</th><th>Out</th><th>Price</th></tr></thead>
-          <tbody>{''.join(table_rows)}</tbody>
-        </table>
-        """
-    else:
-        body_html = "<div style='color:#64748b'>No available quotes right now.</div>"
-
-    css = """
-    body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft YaHei';margin:20px;color:#0f172a}
-    .t{border-collapse:collapse;width:100%} .t th,.t td{border:1px solid #e2e8f0;padding:8px}
-    .t th{text-align:left;background:#f8fafc}
-    """
-    html = f"""<!doctype html><html><head>
-<meta charset="utf-8"><meta http-equiv="refresh" content="{refresh}">
-<title>{esc(title)}</title>
-<style>{css}</style>
-{head_extra}  <!-- 这里注入 JS 刷新等 -->
-</head><body>
-<h2>{esc(title)}</h2>
-<div style="color:#64748b;margin:6px 0">Auto refresh {refresh}s · {esc(_now_str())}</div>
-{debug_html}  <!-- 这里插入调试面板 -->
-{body_html}
-</body></html>"""
-    return html
-
 def render_legs_page(title: str, refresh: int, legs: list[LegQuote], head_extra: str = "") -> str:
     css = (
         "body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,'PingFang SC','Microsoft YaHei';"
@@ -962,7 +905,7 @@ def render_watchlist_page(title: str, results: List[TwoLegResult], refresh: int,
 
 # 6. Main function
 def main():
-    global SETTINGS
+    global SETTINGS,DBG
 
     #先读取命令行参数
     ap = argparse.ArgumentParser()
@@ -987,13 +930,12 @@ def main():
         ap.error("无效的运行模式")
     elif args.run_mode == "two-leg" and not args.pair_spec:
         ap.error("--two-leg 模式需要 --pair-spec 参数")
-    elif args.run_mode == "one-leg" and not (args.pair_spec or args.pair_any):
-        ap.error("--one-leg 模式需要 --pair-spec 或 --pair-any 参数")
+    elif args.run_mode == "one-leg" and not args.pair_spec:
+        ap.error("--one-leg 模式需要 --pair-spec 参数")
 
 
     #only Load config once
     load_config(args.config)
-    DBG.info("[CHECK] Configuration loaded")
 
     #用CLI参数覆盖配置文件
     if args.run_mode:
@@ -1005,7 +947,15 @@ def main():
     if args.verbose:    
         SETTINGS["verbose"] = args.verbose  
     if args.once:  
-        SETTINGS["once"] = args.once    
+        SETTINGS["once"] = args.once
+    if args.debug:
+        SETTINGS["debug"] = args.debug    
+
+
+
+    #初始化DBG
+    DBG=init_debug_logger(OUT_HTML,SETTINGS["verbose"],SETTINGS["debug"])
+    DBG.info("[CHECK] Debug logger initialized")    
     
     # 创建全局变量 ADAPTERS ，只在main()执行一次
     build_adapters()
@@ -1029,8 +979,6 @@ def main():
     except ImportError:
             print("logger_utils.py not found, debug mode is disabled.")
             args.debug = False
-    
-    
 
 # 7. Entry point
 if __name__ == "__main__":

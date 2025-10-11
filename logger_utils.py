@@ -225,19 +225,13 @@ def _decide_log_path(out_html: Optional[str]) -> Optional[str]:
     base, _ = os.path.splitext(out_html)
     return base + ".log"
 
-def init_debug_logger(app, out_html: Optional[str], verbose: bool) -> SafeDebugLogger | NullLogger:
-    """
-    统一入口：永远返回一个可用的 logger（不会是 None）
-    - 若 app.settings.debug 为 False，则返回 NullLogger（完全 no-op）
-    - 否则返回 SafeDebugLogger（文件 + 控制台）
-    """
+def init_debug_logger(out_html: Optional[str], verbose: bool, debug: bool) -> SafeDebugLogger | NullLogger:
     try:
-        settings = getattr(app, "settings", {}) or {}
-        debug_enabled = bool(settings.get("debug", True))
-        to_console = bool(verbose)
+        debug_enabled = debug
+        to_console = verbose
     except Exception:
         # app 异常也不要影响主流程
-        debug_enabled, to_console = True, bool(verbose)
+        debug_enabled, to_console = True, verbose
 
     if not debug_enabled:
         return NullLogger()

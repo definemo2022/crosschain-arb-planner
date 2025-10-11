@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from assets import Token
 from chains import Chain
+
+# 状态码
 LEG_OK = "ok"
 LEG_NO_ADDR = "no-addr"
 LEG_NO_QUOTE = "no-quote"
@@ -23,33 +25,6 @@ class LegQuote:
     status: Optional[str]=None         # 状态码
     note: Optional[str]=None      # 备注信息
    
-    '''
-    @classmethod
-    def from_row_dict(cls, row: Dict[str, Any]) -> "LegQuote":
-        def _f(x, dv=None):
-            return dv if x is None else x
-        return cls(
-            chain=str(row.get("chain","?")),
-            a=str(row.get("a","?")).upper(),
-            b=str(row.get("b","?")).upper(),
-            base_in=float(_f(row.get("base_in"), 0.0)),
-            in_wei=(int(row["in_wei"]) if row.get("in_wei") is not None else None),
-            out_b=(float(row["out_b"]) if row.get("out_b") is not None else None),
-            out_wei=int(_f(row.get("out_wei"), 0)),
-            adapter=str(row.get("adapter","-")),
-            status=str(row.get("status","")),
-            note=str(row.get("note","")),
-            elapsed_ms=(int(row["elapsed_ms"]) if row.get("elapsed_ms") is not None else None),
-        )
-
-    def to_row_dict(self) -> Dict[str, Any]:
-        return {
-            "chain": self.chain, "a": self.a, "b": self.b, "base_in": self.base_in,
-            "in_wei": self.in_wei, "out_b": self.out_b, "out_wei": self.out_wei,
-            "adapter": self.adapter, "status": self.status, "note": self.note,
-            "elapsed_ms": self.elapsed_ms,
-        }
-    '''
     def as_html_row(self) -> str:
         def esc(s):
             s = "" if s is None else str(s)
